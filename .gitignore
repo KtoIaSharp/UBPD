@@ -1,0 +1,16 @@
+# Arduino IDE and PlatformIO build output
+build/
+.pio/
+*.bin
+*.elf
+*.map
+
+# Local editor and operating-system files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local notes and generated scratch data
+*.log
+*.tmp
