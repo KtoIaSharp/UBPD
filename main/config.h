@@ -29,7 +29,7 @@
 #include <esp_bt.h>
 #include <esp_gap_bt_api.h>
 
-#define UBPD_VERSION "0.4.5"
+#define UBPD_VERSION "0.4.6"
 
 // ---------- OLED 128x64, 4-пиновый модуль (VCC GND SCL SDA) ----------
 #define OLED_SDA 21

@@ -1,9 +1,99 @@
 #include "config.h"
 #include "companies.h"
 
+#include <esp_gap_ble_api.h>
+
+// ==================== РАЗБОР РЕКЛАМНОГО ПАКЕТА (esp_ble_gap) ====================
+// Раньше это делала Arduino-обёртка (BLEAdvertisedDevice). Теперь скан на чистом
+// esp_ble_gap: сами читаем AD-структуры из ble_adv[] в эту структуру. Поля те же,
+// что были нужны от обёртки.
+#define ADV_MAX_SVC 8
+struct AdvSvc {
+  uint8_t len;      // 2 / 4 / 16 байт
+  uint8_t b[16];    // как пришло в эфире (little-endian)
+};
+struct AdvData {
+  uint8_t addr[6];
+  int8_t rssi;
+  uint8_t addrType;
+  uint8_t advFlag;
+  const uint8_t *payload;      // сырой пакет (adv + scan response)
+  size_t payloadLen;
+  bool hasName; char name[64];
+  bool hasAppearance; uint16_t appearance;
+  bool hasTxPower; int8_t txPower;
+  bool hasMfg; const uint8_t *mfg; size_t mfgLen;
+  AdvSvc svc[ADV_MAX_SVC];
+  uint8_t svcCount;
+};
+
+static void advAddSvc(AdvData *a, const uint8_t *b, uint8_t len) {
+  if (a->svcCount >= ADV_MAX_SVC) return;
+  a->svc[a->svcCount].len = len;
+  memcpy(a->svc[a->svcCount].b, b, len);
+  a->svcCount++;
+}
+
+// Разбор AD-структур: каждый блок = [len][type][value...].
+static void advParse(const esp_ble_gap_cb_param_t *p, AdvData *a) {
+  memset(a, 0, sizeof(*a));
+  memcpy(a->addr, p->scan_rst.bda, 6);
+  a->rssi = (int8_t)p->scan_rst.rssi;
+  a->addrType = (uint8_t)p->scan_rst.ble_addr_type;
+  a->advFlag = (uint8_t)p->scan_rst.flag;
+  a->payload = p->scan_rst.ble_adv;
+  a->payloadLen = (size_t)p->scan_rst.adv_data_len + p->scan_rst.scan_rsp_len;
+
+  const uint8_t *d = a->payload;
+  size_t n = a->payloadLen;
+  for (size_t i = 0; i + 1 < n;) {
+    uint8_t len = d[i];
+    if (len == 0) break;
+    if (i + 1 + len > n) break;
+    uint8_t type = d[i + 1];
+    const uint8_t *val = d + i + 2;
+    uint8_t vlen = (uint8_t)(len - 1);
+    switch (type) {
+      case 0x08: case 0x09: {   // имя (сокращённое/полное)
+        if (!a->hasName) {
+          size_t k = 0;
+          for (uint8_t j = 0; j < vlen && k + 1 < sizeof(a->name); j++) {
+            uint8_t c = val[j];
+            if (c >= 0x20) a->name[k++] = (char)c;
+          }
+          a->name[k] = 0;
+          a->hasName = (k > 0);
+        }
+        break;
+      }
+      case 0x0A:                // TX power
+        if (vlen >= 1) { a->hasTxPower = true; a->txPower = (int8_t)val[0]; }
+        break;
+      case 0x19:                // appearance
+        if (vlen >= 2) { a->hasAppearance = true; a->appearance = (uint16_t)(val[0] | (val[1] << 8)); }
+        break;
+      case 0xFF:                // manufacturer data
+        if (vlen >= 2) { a->hasMfg = true; a->mfg = val; a->mfgLen = vlen; }
+        break;
+      case 0x02: case 0x03:     // 16-битные UUID сервисов
+        for (uint8_t j = 0; j + 1 < vlen; j += 2) advAddSvc(a, val + j, 2);
+        break;
+      case 0x04: case 0x05:     // 32-битные
+        for (uint8_t j = 0; j + 3 < vlen; j += 4) advAddSvc(a, val + j, 4);
+        break;
+      case 0x06: case 0x07:     // 128-битные
+        for (uint8_t j = 0; j + 15 < vlen; j += 16) advAddSvc(a, val + j, 16);
+        break;
+      default: break;
+    }
+    i += (size_t)len + 1;
+  }
+}
+
+// Есть ли среди сервисов 16-битный id (учитываем и 128-битную запись базового UUID).
+static bool svcEquals(const AdvData &a, uint16_t id);
+
 // ==================== ИНФЕРЕНЦИЯ ТИПА УСТРОЙСТВА ====================
-// ==================== КАТЕГОРИЯ ДЛЯ CLEAR SCAN ====================
-static bool svcEquals(BLEAdvertisedDevice &dev, uint16_t id);
 // Задача режима: оставить в списке только то, что человек узнаёт с ходу -
 // телефоны, наушники/гарнитуры, колонки и микрофоны. Всё остальное (маячки,
 // трекеры, часы, датчики) не показываем.
@@ -47,15 +137,15 @@ static uint8_t kindFromVendor(uint16_t cid, uint8_t *conf) {
   return KIND_NONE;
 }
 
-static uint8_t inferKind(BLEAdvertisedDevice &dev, DevType type, uint16_t cid,
+static uint8_t inferKind(const AdvData &dev, DevType type, uint16_t cid,
                          const char *low, uint8_t *conf) {
   (void)type;
   uint8_t kind = KIND_NONE;
   uint8_t c = 0;
 
   // 1) appearance (заявление самого устройства)
-  if (dev.haveAppearance()) {
-    uint16_t a = dev.getAppearance();
+  if (dev.hasAppearance) {
+    uint16_t a = dev.appearance;
     if (a >= 0x0040 && a <= 0x007F) { kind = KIND_PHONE; c = 75; }
     else if (a >= 0x0880 && a <= 0x08BF) { kind = KIND_HEADPHONE; c = 80; }   // wearable audio
     else if (a >= 0x08C0 && a <= 0x08FF) { kind = KIND_HEADPHONE; c = 70; }   // слуховой аппарат
@@ -120,10 +210,19 @@ const char *kindTag(uint8_t kind, uint8_t conf, char *buf, size_t bufLen) {
   return buf;
 }
 
-static bool svcEquals(BLEAdvertisedDevice &dev, uint16_t id) {
-  BLEUUID want(id);
-  for (int i = 0; i < dev.getServiceUUIDCount(); i++) {
-    if (dev.getServiceUUID(i).equals(want)) return true;
+static bool svcEquals(const AdvData &a, uint16_t id) {
+  for (uint8_t i = 0; i < a.svcCount; i++) {
+    const AdvSvc &s = a.svc[i];
+    if (s.len == 2) {
+      if ((uint16_t)(s.b[0] | (s.b[1] << 8)) == id) return true;
+    } else if (s.len == 16) {
+      // 128-битная запись базового Bluetooth-UUID 0000xxxx-0000-1000-8000-00805f9b34fb
+      if (s.b[15] == 0 && s.b[14] == 0 && s.b[11] == 0 && s.b[10] == 0 &&
+          s.b[9] == 0x10 && s.b[8] == 0x00 && s.b[7] == 0x80 && s.b[6] == 0x00 &&
+          s.b[5] == 0x00 && s.b[4] == 0x80 && s.b[3] == 0x5f && s.b[2] == 0x9b &&
+          s.b[1] == 0x34 && s.b[0] == 0xfb &&
+          (uint16_t)((s.b[13] << 8) | s.b[12]) == id) return true;
+    }
   }
   return false;
 }
@@ -134,7 +233,7 @@ static void lowerCopy(const char *src, char *dst, size_t dstLen) {
   dst[i] = 0;
 }
 
-static DevType inferDeviceType(BLEAdvertisedDevice &dev, uint8_t *conf) {
+static DevType inferDeviceType(const AdvData &dev, uint8_t *conf) {
   DevType best = DT_UNKNOWN;
   uint8_t bestConf = 15;
 
@@ -146,13 +245,10 @@ static DevType inferDeviceType(BLEAdvertisedDevice &dev, uint8_t *conf) {
   };
 
   // iBeacon: Apple company id + тип 0x02 0x15
-  if (dev.haveManufacturerData()) {
-    auto mfg = dev.getManufacturerData();
-    if (mfg.size() >= 4 && (uint8_t)mfg[0] == 0x4C && (uint8_t)mfg[1] == 0x00 &&
-        (uint8_t)mfg[2] == 0x02 && (uint8_t)mfg[3] == 0x15) {
-      *conf = 95;
-      return DT_BEACON;
-    }
+  if (dev.hasMfg && dev.mfgLen >= 4 && dev.mfg[0] == 0x4C && dev.mfg[1] == 0x00 &&
+      dev.mfg[2] == 0x02 && dev.mfg[3] == 0x15) {
+    *conf = 95;
+    return DT_BEACON;
   }
 
   // Сервисы по SIG-таблицам
@@ -163,8 +259,8 @@ static DevType inferDeviceType(BLEAdvertisedDevice &dev, uint8_t *conf) {
   if (svcEquals(dev, 0x181A) || svcEquals(dev, 0x181C)) bump(DT_UNKNOWN, 25);
 
   // Appearance (profile-категории Bluetooth SIG)
-  if (dev.haveAppearance()) {
-    uint16_t a = dev.getAppearance();
+  if (dev.hasAppearance) {
+    uint16_t a = dev.appearance;
     if (a >= 0x0040 && a <= 0x007F) bump(DT_PHONE, 60);
     else if (a >= 0x0080 && a <= 0x00BF) bump(DT_COMPUTER, 60);
     else if (a >= 0x00C0 && a <= 0x00DF) bump(DT_WATCH, 65);
@@ -175,7 +271,7 @@ static DevType inferDeviceType(BLEAdvertisedDevice &dev, uint8_t *conf) {
 
   // Имя в рекламе
   char nm[64] = {0};
-  if (dev.haveName()) snprintf(nm, sizeof(nm), "%s", dev.getName().c_str());
+  if (dev.hasName) snprintf(nm, sizeof(nm), "%s", dev.name);
   char low[64];
   lowerCopy(nm, low, sizeof(low));
 
@@ -209,10 +305,9 @@ static DevType inferDeviceType(BLEAdvertisedDevice &dev, uint8_t *conf) {
       strstr(low, "repeater")) bump(DT_NETWORK, 50);
 
   // Производитель по Company ID
-  if (dev.haveManufacturerData()) {
-    auto mfg = dev.getManufacturerData();
-    if (mfg.size() >= 2) {
-      uint16_t cid = (uint8_t)mfg[0] | ((uint16_t)(uint8_t)mfg[1] << 8);
+  if (dev.hasMfg && dev.mfgLen >= 2) {
+    {
+      uint16_t cid = dev.mfg[0] | ((uint16_t)dev.mfg[1] << 8);
       switch (cid) {
         case 0x004C: bump(DT_PHONE, 35); break;      // Apple
         case 0x0006: bump(DT_COMPUTER, 40); break;   // Microsoft
@@ -230,14 +325,12 @@ static DevType inferDeviceType(BLEAdvertisedDevice &dev, uint8_t *conf) {
   return best;
 }
 
-static bool iBeaconUuid(BLEAdvertisedDevice &dev, char *out, size_t outLen) {
-  if (!dev.haveManufacturerData()) return false;
-  auto mfg = dev.getManufacturerData();
-  if (mfg.size() < 25 || (uint8_t)mfg[0] != 0x4C || (uint8_t)mfg[1] != 0x00 ||
-      (uint8_t)mfg[2] != 0x02 || (uint8_t)mfg[3] != 0x15) return false;
+static bool iBeaconUuid(const AdvData &dev, char *out, size_t outLen) {
+  const uint8_t *mfg = dev.mfg;
+  if (!dev.hasMfg || dev.mfgLen < 25) return false;
+  if (mfg[0] != 0x4C || mfg[1] != 0x00 || mfg[2] != 0x02 || mfg[3] != 0x15) return false;
   snprintf(out, outLen, "%02X%02X%02X%02X-%02X%02X-%02X%02X",
-           (uint8_t)mfg[4], (uint8_t)mfg[5], (uint8_t)mfg[6], (uint8_t)mfg[7],
-           (uint8_t)mfg[8], (uint8_t)mfg[9], (uint8_t)mfg[10], (uint8_t)mfg[11]);
+           mfg[4], mfg[5], mfg[6], mfg[7], mfg[8], mfg[9], mfg[10], mfg[11]);
   return true;
 }
 
@@ -253,13 +346,33 @@ static void uuidShort(BLEUUID u, char *out, size_t outLen) {
   upperCopy(out);
 }
 
-static void buildSvcString(BLEAdvertisedDevice &dev, char *out, size_t outLen) {
+// Короткий код сервиса для строки (то же, что раньше делал uuidShort для BLEUUID).
+static void svcShortCode(const AdvSvc &s, char *out, size_t outLen) {
+  char full[40];
+  if (s.len == 2) {
+    uint16_t v = (uint16_t)(s.b[0] | (s.b[1] << 8));
+    snprintf(full, sizeof(full), "%08x-0000-1000-8000-00805f9b34fb", v);
+  } else if (s.len == 4) {
+    uint32_t v = (uint32_t)s.b[0] | ((uint32_t)s.b[1] << 8) |
+                 ((uint32_t)s.b[2] << 16) | ((uint32_t)s.b[3] << 24);
+    snprintf(full, sizeof(full), "%08x-0000-1000-8000-00805f9b34fb", v);
+  } else {
+    snprintf(full, sizeof(full),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             s.b[15], s.b[14], s.b[13], s.b[12], s.b[11], s.b[10], s.b[9], s.b[8],
+             s.b[7], s.b[6], s.b[5], s.b[4], s.b[3], s.b[2], s.b[1], s.b[0]);
+  }
+  if (strncmp(full, "0000", 4) == 0) snprintf(out, outLen, "%.4s", full + 4);
+  else snprintf(out, outLen, "%.8s", full);
+  upperCopy(out);
+}
+
+static void buildSvcString(const AdvData &dev, char *out, size_t outLen) {
   out[0] = 0;
   size_t used = 0;
-  int cnt = dev.getServiceUUIDCount();
-  for (int i = 0; i < cnt && i < 4; i++) {
+  for (uint8_t i = 0; i < dev.svcCount && i < 4; i++) {
     char code[10];
-    uuidShort(dev.getServiceUUID(i), code, sizeof(code));
+    svcShortCode(dev.svc[i], code, sizeof(code));
     int n = snprintf(out + used, outLen - used, "%s%s", used ? " " : "", code);
     if (n < 0 || (size_t)n >= outLen - used) break;
     used += (size_t)n;
@@ -275,12 +388,12 @@ const char *companyShort(uint16_t cid) {
   return companyNameLookup(cid);
 }
 
-static void advUpsert(BLEAdvertisedDevice &dev, DevType type, uint8_t confidence) {
+static void advUpsert(const AdvData &dev, DevType type, uint8_t confidence) {
   uint8_t addr[6];
-  memcpy(addr, dev.getAddress().getNative(), 6);
+  memcpy(addr, dev.addr, 6);
 
   char raw[64] = {0};
-  if (dev.haveName()) snprintf(raw, sizeof(raw), "%s", dev.getName().c_str());
+  if (dev.hasName) snprintf(raw, sizeof(raw), "%s", dev.name);
 
   char nm[DEV_NAME_LEN] = {0};
   size_t k = 0;
@@ -295,9 +408,8 @@ static void advUpsert(BLEAdvertisedDevice &dev, DevType type, uint8_t confidence
   bool isIbeacon = iBeaconUuid(dev, ib, sizeof(ib));
 
   uint16_t cid = 0;
-  if (dev.haveManufacturerData()) {
-    auto mfg = dev.getManufacturerData();
-    if (mfg.size() >= 2) cid = (uint8_t)mfg[0] | ((uint16_t)(uint8_t)mfg[1] << 8);
+  if (dev.hasMfg && dev.mfgLen >= 2) {
+    cid = dev.mfg[0] | ((uint16_t)dev.mfg[1] << 8);
   }
 
   // категория для CLEAR SCAN (телефон/наушники/колонка/микрофон)
@@ -351,9 +463,9 @@ static void advUpsert(BLEAdvertisedDevice &dev, DevType type, uint8_t confidence
   if (nm[0]) snprintf(devices[slot].name, sizeof(devices[slot].name), "%s", nm);
   if (svc[0]) snprintf(devices[slot].svc, sizeof(devices[slot].svc), "%s", svc);
   if (isIbeacon) snprintf(devices[slot].svc, sizeof(devices[slot].svc), "iBeacon %s", ib);
-  devices[slot].rssi = (int8_t)dev.getRSSI();
-  devices[slot].txPower = dev.haveTXPower() ? (int8_t)dev.getTXPower() : 0;
-  devices[slot].appearance = dev.haveAppearance() ? dev.getAppearance() : 0;
+  devices[slot].rssi = dev.rssi;
+  devices[slot].txPower = dev.hasTxPower ? dev.txPower : 0;
+  devices[slot].appearance = dev.hasAppearance ? dev.appearance : 0;
   devices[slot].companyId = cid;
   devices[slot].kind = kind;
   devices[slot].kindConf = kindConf;
@@ -371,12 +483,12 @@ static void advUpsert(BLEAdvertisedDevice &dev, DevType type, uint8_t confidence
 #if SCAN_DEBUG
   if (fresh || (nm[0] && !hadName)) {
     Serial.printf("[adv] %02X:%02X:%02X:%02X:%02X:%02X rssi=%d имя=\"%s\"%s%s\n",
-                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], (int)dev.getRSSI(),
+                  addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], (int)dev.rssi,
                   devices[slot].name[0] ? devices[slot].name : raw,
                   fresh ? " [новое]" : " [имя пришло позже]",
-                  dev.haveName() ? "" : " (в этом пакете имени нет)");
-    uint8_t *pl = dev.getPayload();
-    size_t plLen = dev.getPayloadLength();
+                  dev.hasName ? "" : " (в этом пакете имени нет)");
+    const uint8_t *pl = dev.payload;
+    size_t plLen = dev.payloadLen;
     Serial.printf("[raw] %u байт:", (unsigned)plLen);
     for (size_t i = 0; i < plLen && i < 62; i++) {
       Serial.printf(" %02X", pl[i]);
@@ -396,37 +508,82 @@ static void advUpsert(BLEAdvertisedDevice &dev, DevType type, uint8_t confidence
   advCount++;
 }
 
-class AdvCallbacks : public BLEAdvertisedDeviceCallbacks {
-  void onResult(BLEAdvertisedDevice dev) override {
-    uint8_t conf = 0;
-    DevType t = inferDeviceType(dev, &conf);
-    advUpsert(dev, t, conf);
-  }
-};
+// ==================== BLE-СКАН НА esp_ble_gap ====================
+// Раньше тут были BLEDevice::getScan()/BLEScan/BLEAdvertisedDevice. Теперь скан
+// напрямую через esp_ble_gap: наш обработчик получает SCAN_RESULT, сам разбирает
+// пакет (advParse) и кладёт устройство в кэш. BLEDevice::init() и реклама/
+// подключение остаются на ядре Arduino - обёртка зовёт наш GAP-обработчик
+// последним (BLEDevice::setCustomGapHandler), поэтому прежнему коду не мешаем.
+static bool bleCbReady = false;
+static bool bleScanWant = false;
 
-static AdvCallbacks advCallbacks;
+static void ubpdBleGapCb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) {
+  switch (event) {
+    case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+      if (!bleScanWant) break;
+      if (param->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+        esp_ble_gap_start_scanning(0);  // 0 = непрерывно, пока не остановим
+      } else {
+        bleScanWant = false;
+        setError("ble scan params failed");
+      }
+      break;
+    case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
+      if (param->scan_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+        bleScanning = true;
+      } else {
+        bleScanning = false;
+        setError("ble scan start failed");
+      }
+      break;
+    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+      bleScanning = false;
+      break;
+    case ESP_GAP_BLE_SCAN_RESULT_EVT: {
+      if (param->scan_rst.search_evt != ESP_GAP_SEARCH_INQ_RES_EVT) break;
+      if (!bleScanning) break;
+      AdvData a;
+      advParse(param, &a);
+      uint8_t conf = 0;
+      DevType t = inferDeviceType(a, &conf);
+      advUpsert(a, t, conf);
+      break;
+    }
+    default:
+      break;
+  }
+}
 
 void bleScanStart() {
-  if (bleScanning) return;
+  if (bleScanning || bleScanWant) return;
   if (classicScanning) return;  // радио одно: классический поиск и BLE-скан по очереди
-  BLEScan *scan = BLEDevice::getScan();
-  scan->setAdvertisedDeviceCallbacks(&advCallbacks, true);  // дубликаты = живой RSSI
-  scan->setActiveScan(true);
-  scan->setInterval(90);
-  scan->setWindow(60);
-  scan->start(0, nullptr, false);                            // 0 = непрерывно
-  bleScanning = true;
+  if (!bleCbReady) {
+    BLEDevice::setCustomGapHandler(ubpdBleGapCb);
+    bleCbReady = true;
+  }
+  bleScanWant = true;
+  static esp_ble_scan_params_t sp;
+  sp.scan_type          = BLE_SCAN_TYPE_ACTIVE;       // активный: спросим scan response с именем
+  sp.own_addr_type      = BLE_ADDR_TYPE_PUBLIC;
+  sp.scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL;
+  sp.scan_interval      = 144;                        // 90 мс (единица 0.625 мс)
+  sp.scan_window        = 96;                         // 60 мс
+  sp.scan_duplicate     = BLE_SCAN_DUPLICATE_DISABLE; // дубликаты = живой RSSI
+  if (esp_ble_gap_set_scan_params(&sp) != ESP_OK) {
+    setError("ble scan params failed");
+    bleScanWant = false;
+  }
 }
 
 void bleScanStop() {
+  bleScanWant = false;
   if (!bleScanning) return;
-  BLEDevice::getScan()->stop();
+  esp_ble_gap_stop_scanning();
   bleScanning = false;
 }
 
 void bleScanRecycle() {
-  if (!bleScanning) return;
-  BLEDevice::getScan()->clearResults();  // не даём кэшу стека расти
+  // Кэша на стороне хоста теперь нет (дубликаты идут к нам напрямую), чистить нечего.
 }
 
 // ==================== СПИСКИ И ИЗБРАННОЕ ====================

@@ -51,12 +51,15 @@ BLE/                        <- корень проекта ESP-IDF (путь д�
 | `WiFi` (класс), `WiFi.scanNetworks`, `WiFi.softAP` | `esp_wifi` + `esp_netif`, события `WIFI_EVENT_SCAN_DONE`, режим `APSTA` |
 | `tone()` / `noTone()` | `driver/ledc`: явный таймер и канал, `ledc_set_freq/ledc_set_duty` |
 | `pinMode/digitalWrite` для пищалки | `driver/gpio`: `gpio_set_direction`, `gpio_set_level` |
+| BLE-скан: `BLEDevice`/`BLEScan`/`BLEAdvertisedDevice` | `esp_ble_gap`: свой GAP-обработчик (`setCustomGapHandler`), активный скан `esp_ble_gap_start_scanning`, разбор AD-структур вручную |
 
 ## Что осознанно осталось на Arduino
 
-* **BLE-скан** (`BLEDevice`, `BLEAdvertisedDevice`). Ядро BLE в Arduino — это тонкая
-  обёртка над тем же `esp_ble_gap`, но переписывание разбора adv-отчёта ничего не
-  улучшит, зато рискует сломать рабочее. Перенос — отдельный шаг.
+* **BLE-скан** переписан на `esp_ble_gap` (v0.4.6). Осталась только тонкая
+  прослойка Arduino: `BLEDevice::init()` (инициализация контроллера и стека),
+  реклама (`BLEAdvertising`) и подключение (`BLEClient`). Свой скан-обработчик
+  вешается через `BLEDevice::setCustomGapHandler()` и вызывается последним, так
+  что реклама и клиент продолжают получать свои GAP-события.
 * `Wire` (I2C для OLED), `Serial`, `millis()`, `delay()`, `analogReadMilliVolts`.
   Это примитивы ядра, дублировать их на IDF смысла нет.
 * **U8g2** как есть: в библиотеке уже есть IDF-CMakeLists, менять код отрисовки не нужно.
@@ -97,7 +100,7 @@ Arduino сам генерировал прототипы (ctags) и вставл
 
 ```
 I (713) cpu_start: cpu freq: 240000000
-=== UBPD v0.4.5 ===
+=== UBPD v0.4.6 ===
 [i] Display: 128x64 rows=4
 [i] NVS: имя idx=2, радар=BLE, избранных=1        <- настройки от Arduino-сборки на месте
 I (751) BTDM_INIT: BT controller compile version [0f0c5a2]
