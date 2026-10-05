@@ -3,7 +3,7 @@
 // ==================== ДАННЫЕ ЭКРАНОВ ====================
 const char *const MENU_ITEMS[] = {
   "RADAR", "SCANNERS", "DEVICE TYPE", "WATCH", "TIMED SCAN", "SLEEP WATCH",
-  "BLE FUN", "IDENTITY", "REMOTE", "WEB UI", "НАСТРОЙКИ ФОНА", "DIAGNOSTICS"
+  "BLE FUN", "IDENTITY", "REMOTE", "WEB UI", "MANAGER", "DIAGNOSTICS"
 };
 const uint8_t MENU_COUNT = 12;
 
@@ -74,6 +74,7 @@ void uiInit() {
   // фон по умолчанию разрешён всем (правится в MANAGER)
   for (uint8_t i = 0; i < BG_COUNT; i++) app.bg[i] = BG_BG;
   app.mgrCursor = 0;
+  app.bgCursor = 0;
   app.sortMode = SORT_RSSI;
   app.diagPage = 0;
   app.scannersCursor = 0;
@@ -349,6 +350,7 @@ void handleEvent(uint8_t ev) {
     case SCR_SLEEP: handleSleep(ev); break;
     case SCR_SETTINGS: handleSettings(ev); break;
     case SCR_MANAGER: handleManager(ev); break;
+    case SCR_BGSET: handleBgSet(ev); break;
     case SCR_WEB: handleWeb(ev); break;
     case SCR_REMOTE:
       if (ev == EV_BACK || ev == EV_BACK_LONG) enterScreen(SCR_MENU);
@@ -1450,18 +1452,20 @@ static void drawClassicDevScreen() {
 }
 
 // ==================== MANAGER ====================
-// Здесь живёт всё служебное: права функций в фоне (4 состояния), точка доступа,
-// сортировка списков и вход в настройки. Сами функции фона не имеют -
-// они работают только в своей вкладке, пока MANAGER не разрешит иначе.
+// Папка со всем служебным. Внутри неё отдельная категория «НАСТРОЙКИ ФОНА»
+// (права функций в фоне), а рядом - точка доступа, сортировка, вход в настройки
+// и сброс. Сами функции фона по умолчанию не работают: пока НАСТРОЙКИ ФОНА
+// не разрешат иначе, вкладка живёт только пока ты в ней.
 
 static const char *const MANAGER_ROWS[] = {
-  "ФОН: BLE FUN", "ФОН: IDENTITY", "ФОН: WATCH", "ФОН: TIMED SCAN",
-  "ФОН: WEB UI", "ТОЧКА ДОСТУПА", "СОРТИРОВКА", "НАСТРОЙКИ", "СБРОС НАСТРОЕК"
+  "НАСТРОЙКИ ФОНА", "ТОЧКА ДОСТУПА", "СОРТИРОВКА", "НАСТРОЙКИ", "СБРОС НАСТРОЕК"
 };
-#define MANAGER_ROWS_COUNT 9
-#define MGR_SORT_ROW 6
-#define MGR_SETTINGS_ROW 7
-#define MGR_RESET_ROW 8
+#define MANAGER_ROWS_COUNT 5
+#define MGR_BG_ROW 0
+#define MGR_AP_ROW 1
+#define MGR_SORT_ROW 2
+#define MGR_SETTINGS_ROW 3
+#define MGR_RESET_ROW 4
 
 static const char *sortName(uint8_t m) {
   switch (m) {
@@ -1485,13 +1489,9 @@ void handleManager(uint8_t ev) {
       toast("НАСТРОЙКИ СБРОШЕНЫ", 2000);
     }
   } else if (ev == EV_OK) {
-    if (app.mgrCursor < BG_COUNT) {
-      uint8_t st = (uint8_t)((app.bg[app.mgrCursor] + 1) % 4);
-      app.bg[app.mgrCursor] = st;
-      storageSaveSettings();
-      syncRadios();   // права поменялись - сразу применяем
-      toast(bgStateName(st), 1200);
-    } else if (app.mgrCursor == 5) {          // точка доступа
+    if (app.mgrCursor == MGR_BG_ROW) {
+      enterScreen(SCR_BGSET);                     // категория «НАСТРОЙКИ ФОНА»
+    } else if (app.mgrCursor == MGR_AP_ROW) {     // точка доступа
       if (webRunning) webStop();
       else webInit();
       storageSaveSettings();
@@ -1509,7 +1509,7 @@ void handleManager(uint8_t ev) {
 
 static void drawManagerScreen() {
   u8g2.clearBuffer();
-  drawHeader("НАСТРОЙКИ ФОНА", webRunning ? "AP:ON" : "");
+  drawHeader("MANAGER", webRunning ? "AP:ON" : "");
   uint8_t rows = listRows();
   uint8_t top = 0;
   if (app.mgrCursor >= rows) top = app.mgrCursor - rows + 1;
@@ -1519,13 +1519,60 @@ static void drawManagerScreen() {
     if (i >= MANAGER_ROWS_COUNT) break;
     char right[14];
     right[0] = 0;
-    if (i < BG_COUNT) snprintf(right, sizeof(right), "%s", bgStateName(app.bg[i]));
-    else if (i == 5) snprintf(right, sizeof(right), "%s", webRunning ? "ВКЛ" : "ВЫКЛ");
-    else if (i == MGR_SORT_ROW) snprintf(right, sizeof(right), "%s", sortName(app.sortMode));
-    else if (i == MGR_RESET_ROW) snprintf(right, sizeof(right), "HOLD");
+    if (i == MGR_BG_ROW) {
+      uint8_t on = 0;
+      for (uint8_t k = 0; k < BG_COUNT; k++) if (app.bg[k] != BG_OFF) on++;
+      snprintf(right, sizeof(right), "%u/%u", (unsigned)on, (unsigned)BG_COUNT);
+    } else if (i == MGR_AP_ROW) {
+      snprintf(right, sizeof(right), "%s", webRunning ? "ВКЛ" : "ВЫКЛ");
+    } else if (i == MGR_SORT_ROW) {
+      snprintf(right, sizeof(right), "%s", sortName(app.sortMode));
+    } else if (i == MGR_RESET_ROW) {
+      snprintf(right, sizeof(right), "HOLD");
+    }
     drawRow(r, MANAGER_ROWS[i], right, i == app.mgrCursor);
   }
-  drawFooter("OK-сменить  HOLD-сброс");
+  drawFooter("OK-открыть  HOLD-сброс");
+  u8g2.sendBuffer();
+}
+
+// ==================== НАСТРОЙКИ ФОНА (категория внутри MANAGER) ====================
+// Права функций в фоне: у каждой своё из 4 состояний (ВЫКЛ/ФОН/СОН/ФОН+СОН).
+// Функция работает в фоне только если здесь разрешено.
+static const char *const BG_ROWS[] = {
+  "ФОН: BLE FUN", "ФОН: IDENTITY", "ФОН: WATCH", "ФОН: TIMED SCAN", "ФОН: WEB UI"
+};
+
+void handleBgSet(uint8_t ev) {
+  if (ev == EV_UP) {
+    if (app.bgCursor) app.bgCursor--;
+  } else if (ev == EV_DOWN) {
+    if (app.bgCursor + 1 < BG_COUNT) app.bgCursor++;
+  } else if (ev == EV_OK || ev == EV_OK_LONG) {
+    if (app.bgCursor < BG_COUNT) {
+      uint8_t st = (uint8_t)((app.bg[app.bgCursor] + 1) % 4);
+      app.bg[app.bgCursor] = st;
+      storageSaveSettings();
+      syncRadios();   // права поменялись - сразу применяем
+      toast(bgStateName(st), 1200);
+    }
+  } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
+    enterScreen(SCR_MANAGER);
+  }
+}
+
+static void drawBgSetScreen() {
+  u8g2.clearBuffer();
+  drawHeader("НАСТРОЙКИ ФОНА", "");
+  uint8_t rows = listRows();
+  uint8_t top = 0;
+  if (app.bgCursor >= rows) top = app.bgCursor - rows + 1;
+  for (uint8_t r = 0; r < rows; r++) {
+    uint8_t i = top + r;
+    if (i >= BG_COUNT) break;
+    drawRow(r, BG_ROWS[i], bgStateName(app.bg[i]), i == app.bgCursor);
+  }
+  drawFooter("OK-сменить  BACK-назад");
   u8g2.sendBuffer();
 }
 
@@ -1674,6 +1721,7 @@ void drawCurrentScreen() {
     case SCR_SLEEP: drawSleepScreen(); break;
     case SCR_SETTINGS: drawSettingsScreen(); break;
     case SCR_MANAGER: drawManagerScreen(); break;
+    case SCR_BGSET: drawBgSetScreen(); break;
     case SCR_WEB: drawWebScreen(); break;
     case SCR_DIAG: drawDiagScreen(); break;
     default: break;

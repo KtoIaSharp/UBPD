@@ -185,8 +185,8 @@ enum SortMode : uint8_t { SORT_RSSI = 0, SORT_NAME, SORT_TYPE };
 enum Screen : uint8_t {
   SCR_MENU = 0, SCR_RADAR, SCR_SCANNERS, SCR_SCANNER, SCR_BLESCAN, SCR_DEVICE,
   SCR_REMOTE, SCR_WATCH, SCR_IDENTITY, SCR_BLEFUN, SCR_TIMED, SCR_TYPE,
-  SCR_SLEEP, SCR_SETTINGS, SCR_MANAGER, SCR_WEB, SCR_DIAG, SCR_CLASSIC,
-  SCR_CLASSICDEV
+  SCR_SLEEP, SCR_SETTINGS, SCR_MANAGER, SCR_BGSET, SCR_WEB, SCR_DIAG,
+  SCR_CLASSIC, SCR_CLASSICDEV
 };
 
 enum BtnId : uint8_t { B_UP = 0, B_DOWN, B_OK, B_BACK, B_COUNT };
@@ -302,6 +302,7 @@ struct AppState {
   // --- v0.3: менеджер фона ---
   uint8_t bg[BG_COUNT];
   uint8_t mgrCursor;
+  uint8_t bgCursor;      // курсор в категории НАСТРОЙКИ ФОНА (внутри MANAGER)
   uint8_t sortMode;
   uint8_t diagPage;
   // --- v0.4: классический Bluetooth ---

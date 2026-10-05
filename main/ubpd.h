@@ -135,6 +135,7 @@ void clampClassicList();
 void handleClassic(uint8_t ev);
 void handleClassicDev(uint8_t ev);
 void handleManager(uint8_t ev);
+void handleBgSet(uint8_t ev);
 void handleWeb(uint8_t ev);
 void drawCurrentScreen();
 void webInit();
