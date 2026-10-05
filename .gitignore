@@ -5,6 +5,12 @@ build/
 *.elf
 *.map
 
+# ESP-IDF
+sdkconfig
+sdkconfig.old
+dependencies.lock
+managed_components/
+
 # Local editor and operating-system files
 .DS_Store
 Thumbs.db
