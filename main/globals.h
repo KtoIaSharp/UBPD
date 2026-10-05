@@ -21,9 +21,11 @@ extern volatile uint16_t slotRecycles;
 extern int16_t scanOrder[MAX_DEVICES];
 extern uint8_t scanOrderCount;
 
-// Отфильтрованный список для CLEAR SCAN (только телефон/наушники/колонка/микрофон)
-extern int16_t clearOrder[MAX_DEVICES];
-extern uint8_t clearCount;
+// Общий список вкладки SCANNER (классика + BLE в одном списке). Кодировка:
+// значение >= 0 - индекс в devices (BLE), значение < 0 - индекс в classics,
+// равный (-1 - значение). Классика всегда идёт выше BLE.
+extern int16_t combOrder[MAX_DEVICES + MAX_CLASSIC];
+extern uint8_t combCount;
 
 extern FavDevice favorites[MAX_FAVS];
 

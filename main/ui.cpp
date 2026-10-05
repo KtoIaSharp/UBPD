@@ -2,11 +2,10 @@
 
 // ==================== ДАННЫЕ ЭКРАНОВ ====================
 const char *const MENU_ITEMS[] = {
-  "RADAR", "SCANNER", "CLASSIC BT", "CLEAR SCAN", "DEVICE TYPE", "WATCH",
-  "TIMED SCAN", "SLEEP WATCH", "BLE FUN", "IDENTITY", "REMOTE", "WEB UI",
-  "MANAGER", "DIAGNOSTICS"
+  "RADAR", "SCANNERS", "DEVICE TYPE", "WATCH", "TIMED SCAN", "SLEEP WATCH",
+  "BLE FUN", "IDENTITY", "REMOTE", "WEB UI", "НАСТРОЙКИ ФОНА", "DIAGNOSTICS"
 };
-const uint8_t MENU_COUNT = 14;
+const uint8_t MENU_COUNT = 12;
 
 const char *const TYPE_NAMES[] = {
   "Unknown", "Audio", "HID", "Beacon", "Phone", "Computer",
@@ -77,6 +76,13 @@ void uiInit() {
   app.mgrCursor = 0;
   app.sortMode = SORT_RSSI;
   app.diagPage = 0;
+  app.scannersCursor = 0;
+  app.combCursor = 0;
+  app.combTop = 0;
+  app.combSel = 0;
+  app.combPhase = true;
+  app.combSwitchAt = 0;
+  app.classicDevFrom = SCR_MENU;
 }
 
 const char *identityAdvName() {
@@ -104,7 +110,7 @@ const char *bgStateName(uint8_t st) {
 
 // Нужно ли сейчас сканировать: либо сама вкладка, либо фоновый мониторинг WATCH.
 static bool screenWantsScan(Screen s) {
-  if (s == SCR_SCANNER || s == SCR_WATCH || s == SCR_TYPE || s == SCR_CLEAR) return true;
+  if (s == SCR_BLESCAN || s == SCR_WATCH || s == SCR_TYPE) return true;
   if (s == SCR_RADAR && app.radarSource == RS_BLE) return true;
   if (s == SCR_WEB) return true;
   return false;
@@ -120,12 +126,24 @@ void syncRadios() {
 
   // --- сканирование: своя вкладка + фоновый мониторинг WATCH ---
   bool wantScan = screenWantsScan(app.screen);
-  if (!wantScan && app.screen != SCR_CLASSIC && bgAllows(BG_WATCHMON) && favCount() > 0 && !app.sleeping) wantScan = true;
+  if (!wantScan && app.screen != SCR_CLASSIC && app.screen != SCR_SCANNER &&
+      bgAllows(BG_WATCHMON) && favCount() > 0 && !app.sleeping) wantScan = true;
 
   if (app.screen == SCR_CLASSIC) {
     // BLE и классика делят один радиомодуль: пока идёт классический поиск,
     // BLE-скан молчит, и наоборот.
     classicScanStart();
+  } else if (app.screen == SCR_SCANNER) {
+    // Общий список: тот же один радиомодуль, поэтому BLE и классика идут по
+    // очереди (combPhase переключается в screenTick). Найденное копится в обоих
+    // кэшах и показывается вместе.
+    if (app.combPhase) {
+      classicScanStop();
+      bleScanStart();
+    } else {
+      bleScanStop();
+      classicScanStart();
+    }
   } else {
     classicScanStop();
     if (app.screen == SCR_RADAR && app.radarSource == RS_WIFI) {
@@ -164,7 +182,21 @@ void enterScreen(Screen s) {
   app.redraw = true;
 
   switch (s) {
+    case SCR_SCANNERS:
+      app.scannersCursor = 0;
+      break;
     case SCR_SCANNER:
+      app.combCursor = 0;
+      app.combTop = 0;
+      app.combSel = 0;
+      app.combPhase = true;
+      app.combSwitchAt = millis();
+      buildSortedDeviceList();
+      buildClassicList();
+      buildCombinedList();
+      clampComb();
+      break;
+    case SCR_BLESCAN:
     case SCR_TYPE:
       app.listTop = 0;
       app.listCursor = 0;
@@ -221,26 +253,21 @@ void uiLoop() {
 void screenTick() {
   uint32_t now = millis();
 
-  if (app.screen != SCR_CLASSIC &&
-      (app.screen == SCR_RADAR || app.screen == SCR_SCANNER || app.screen == SCR_WATCH ||
-       app.screen == SCR_TYPE || app.screen == SCR_CLEAR || app.screen == SCR_WEB ||
+  if (app.screen != SCR_CLASSIC && app.screen != SCR_SCANNER &&
+      (app.screen == SCR_RADAR || app.screen == SCR_BLESCAN || app.screen == SCR_WATCH ||
+       app.screen == SCR_TYPE || app.screen == SCR_WEB ||
        (bgAllows(BG_WATCHMON) && favCount() > 0))) {
     if (now - lastListRefresh >= 1000) {
       lastListRefresh = now;
       bleScanRecycle();
       buildSortedDeviceList();
-      buildClearList();
       forgetStaleDevices();
     }
   }
-  if (app.screen == SCR_SCANNER || app.screen == SCR_TYPE) {
+  if (app.screen == SCR_BLESCAN || app.screen == SCR_TYPE) {
     int16_t i = app.selValid ? scanOrderIndexOf(app.selAddr) : -1;
     if (i >= 0) app.listCursor = (uint8_t)i;
     clampList();
-  } else if (app.screen == SCR_CLEAR) {
-    int16_t i = app.selValid ? clearOrderIndexOf(app.selAddr) : -1;
-    if (i >= 0) app.listCursor = (uint8_t)i;
-    clampClearList();
   } else if (app.screen == SCR_CLASSIC) {
     classicTick();  // поиск сам заканчивается - держим его запущенным
     if (now - lastListRefresh >= 1000) {
@@ -253,6 +280,23 @@ void screenTick() {
       if (i >= 0) app.classicCursor = (uint8_t)i;
     }
     clampClassicList();
+  } else if (app.screen == SCR_SCANNER) {
+    classicTick();
+    if (now - app.combSwitchAt >= COMB_SWITCH_MS) {  // BLE <-> классика по очереди
+      app.combSwitchAt = now;
+      app.combPhase = !app.combPhase;
+      syncRadios();
+    }
+    if (now - lastListRefresh >= 1000) {
+      lastListRefresh = now;
+      bleScanRecycle();
+      buildSortedDeviceList();
+      buildClassicList();
+      buildCombinedList();
+      forgetStaleDevices();
+      forgetStaleClassic();
+    }
+    clampComb();
   }
 
   if (app.screen == SCR_RADAR) {
@@ -291,14 +335,15 @@ void handleEvent(uint8_t ev) {
   switch (app.screen) {
     case SCR_MENU: handleMenu(ev); break;
     case SCR_RADAR: handleRadar(ev); break;
+    case SCR_SCANNERS: handleScanners(ev); break;
     case SCR_SCANNER: handleScanner(ev); break;
+    case SCR_BLESCAN: handleBleScan(ev); break;
     case SCR_DEVICE: handleDevice(ev); break;
     case SCR_WATCH: handleWatch(ev); break;
     case SCR_IDENTITY: handleIdentity(ev); break;
     case SCR_BLEFUN: handleBleFun(ev); break;
     case SCR_TIMED: handleTimed(ev); break;
     case SCR_TYPE: handleType(ev); break;
-    case SCR_CLEAR: handleClear(ev); break;
     case SCR_CLASSIC: handleClassic(ev); break;
     case SCR_CLASSICDEV: handleClassicDev(ev); break;
     case SCR_SLEEP: handleSleep(ev); break;
@@ -335,19 +380,17 @@ void openMenuItem() {
   Screen s = SCR_MENU;
   switch (app.menuCursor) {
     case 0: s = SCR_RADAR; break;
-    case 1: s = SCR_SCANNER; break;
-    case 2: s = SCR_CLASSIC; break;
-    case 3: s = SCR_CLEAR; break;
-    case 4: s = SCR_TYPE; break;
-    case 5: s = SCR_WATCH; break;
-    case 6: s = SCR_TIMED; break;
-    case 7: s = SCR_SLEEP; break;
-    case 8: s = SCR_BLEFUN; break;
-    case 9: s = SCR_IDENTITY; break;
-    case 10: s = SCR_REMOTE; break;
-    case 11: s = SCR_WEB; break;
-    case 12: s = SCR_MANAGER; break;
-    case 13: s = SCR_DIAG; break;
+    case 1: s = SCR_SCANNERS; break;
+    case 2: s = SCR_TYPE; break;
+    case 3: s = SCR_WATCH; break;
+    case 4: s = SCR_TIMED; break;
+    case 5: s = SCR_SLEEP; break;
+    case 6: s = SCR_BLEFUN; break;
+    case 7: s = SCR_IDENTITY; break;
+    case 8: s = SCR_REMOTE; break;
+    case 9: s = SCR_WEB; break;
+    case 10: s = SCR_MANAGER; break;
+    case 11: s = SCR_DIAG; break;
     default: break;
   }
   enterScreen(s);
@@ -365,8 +408,147 @@ void openDeviceScreen(int16_t devIdx, Screen from) {
   enterScreen(SCR_DEVICE);
 }
 
-// ==================== SCANNER ====================
+// ==================== SCANNERS (подменю) ====================
+// Три режима обнаружения в одной вкладке меню: общий список (классика + BLE),
+// только классика и только BLE. Отдельный CLEAR SCAN убран: фильтр «телефон/
+// наушники/колонка/микрофон» по сути то же, что и так находит классический поиск.
+static const char *const SCANNER_ITEMS[] = {"SCANNER", "CLASSIC SCANNER", "BLE SCANNER"};
+#define SCANNER_ITEMS_COUNT 3
+
+void handleScanners(uint8_t ev) {
+  if (ev == EV_UP) {
+    if (app.scannersCursor) app.scannersCursor--;
+  } else if (ev == EV_DOWN) {
+    if (app.scannersCursor + 1 < SCANNER_ITEMS_COUNT) app.scannersCursor++;
+  } else if (ev == EV_OK || ev == EV_OK_LONG) {
+    if (app.scannersCursor == 0) enterScreen(SCR_SCANNER);
+    else if (app.scannersCursor == 1) enterScreen(SCR_CLASSIC);
+    else enterScreen(SCR_BLESCAN);
+  } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
+    enterScreen(SCR_MENU);
+  }
+}
+
+static void drawScannersScreen() {
+  u8g2.clearBuffer();
+  drawHeader("SCANNERS", "");
+  uint8_t rows = listRows();
+  for (uint8_t r = 0; r < rows && r < SCANNER_ITEMS_COUNT; r++) {
+    drawRow(r, SCANNER_ITEMS[r], "", r == app.scannersCursor);
+  }
+  drawFooter("OK-открыть  BACK-меню");
+  u8g2.sendBuffer();
+}
+
+// Короткая метка типа устройства для одной строки списка.
+static const char *shortTypeTag(DevType t) {
+  switch (t) {
+    case DT_PHONE: return "PH";
+    case DT_AUDIO: return "AU";
+    case DT_HID: return "HID";
+    case DT_COMPUTER: return "PC";
+    case DT_WATCH: return "WCH";
+    case DT_TRACKER: return "TRK";
+    case DT_BEACON: return "BCN";
+    case DT_PRINTER: return "PRN";
+    case DT_CAMERA: return "CAM";
+    case DT_NETWORK: return "NET";
+    default: return "--";
+  }
+}
+
+void clampComb() {
+  uint8_t n = combCount;
+  uint8_t rows = listRows();
+  if (!n) {
+    app.combCursor = 0;
+    app.combTop = 0;
+    return;
+  }
+  if (app.combCursor >= n) app.combCursor = n - 1;
+  if (app.combTop + rows > n) app.combTop = (n > rows) ? (n - rows) : 0;
+  if (app.combCursor < app.combTop) app.combTop = app.combCursor;
+  if (app.combCursor >= app.combTop + rows) app.combTop = app.combCursor - rows + 1;
+}
+
+// ==================== SCANNER (классика + BLE) ====================
 void handleScanner(uint8_t ev) {
+  if (ev == EV_UP || ev == EV_DOWN) {
+    if (!combCount) return;
+    int16_t idx = (int16_t)app.combCursor;
+    if (ev == EV_UP) {
+      if (idx > 0) idx--;
+    } else {
+      if (idx + 1 < (int16_t)combCount) idx++;
+    }
+    app.combCursor = (uint8_t)idx;
+    app.combSel = combOrder[idx];
+    clampComb();
+  } else if (ev == EV_OK_LONG) {
+    if (!combCount) return;
+    int16_t v = combOrder[app.combCursor];
+    if (v >= 0) toggleFavorite(v);
+    else toggleFavoriteClassic((int16_t)(-1 - v));
+  } else if (ev == EV_OK) {
+    if (!combCount) return;
+    int16_t v = combOrder[app.combCursor];
+    if (v >= 0) {
+      openDeviceScreen(v, SCR_SCANNER);
+    } else {
+      app.classicSel = (int16_t)(-1 - v);
+      app.classicDevFrom = SCR_SCANNER;
+      enterScreen(SCR_CLASSICDEV);
+    }
+  } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
+    enterScreen(SCR_SCANNERS);
+  }
+}
+
+static void drawScannerScreen() {
+  u8g2.clearBuffer();
+  char right[10];
+  snprintf(right, sizeof(right), "%u", (unsigned)combCount);
+  drawHeader("SCANNER", right);
+
+  uint8_t rows = listRows();
+  for (uint8_t r = 0; r < rows; r++) {
+    uint8_t i = app.combTop + r;
+    if (i >= combCount) break;
+    int16_t v = combOrder[i];
+    char tag[8];
+    char nm[20];
+    char rr[8];
+    const uint8_t *addr;
+    if (v >= 0) {
+      const BleDevice *d = &devices[v];
+      if (d->kind != KIND_NONE) kindTag(d->kind, d->kindConf, tag, sizeof(tag));
+      else snprintf(tag, sizeof(tag), "%s", shortTypeTag(d->type));
+      deviceLabel(d, nm, 12);
+      addr = d->addr;
+      snprintf(rr, sizeof(rr), "%d", d->rssi);
+    } else {
+      const ClassicDevice *d = &classics[-1 - v];
+      if (d->kind != KIND_NONE) kindTag(d->kind, d->kindConf, tag, sizeof(tag));
+      else snprintf(tag, sizeof(tag), "%s", shortTypeTag(d->type));
+      classicLabel(d, nm, 12);
+      addr = d->addr;
+      if (d->rssi == -128) snprintf(rr, sizeof(rr), "--");
+      else snprintf(rr, sizeof(rr), "%d", d->rssi);
+    }
+    char left[26];
+    snprintf(left, sizeof(left), "%s%s %s", isFavorite(addr) ? "*" : " ", tag, nm);
+    drawRow(r, left, rr, i == app.combCursor);
+  }
+  if (!combCount) {
+    u8g2.setFont(FONT_BODY);
+    txtCenter(rowBaseline(1), "поиск BLE + classic...");
+  }
+  drawFooter("OK-инфо HOLD-следить");
+  u8g2.sendBuffer();
+}
+
+// ==================== BLE SCANNER (только BLE) ====================
+void handleBleScan(uint8_t ev) {
   if (ev == EV_UP || ev == EV_DOWN) {
     if (!scanOrderCount) return;
     int16_t idx = app.selValid ? scanOrderIndexOf(app.selAddr) : (int16_t)app.listCursor;
@@ -382,17 +564,17 @@ void handleScanner(uint8_t ev) {
     clampList();
   } else if (ev == EV_OK || ev == EV_OK_LONG) {
     if (!scanOrderCount) return;
-    openDeviceScreen(scanOrder[app.listCursor], SCR_SCANNER);
+    openDeviceScreen(scanOrder[app.listCursor], SCR_BLESCAN);
   } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
-    enterScreen(SCR_MENU);
+    enterScreen(SCR_SCANNERS);
   }
 }
 
-static void drawScannerScreen() {
+static void drawBleScanScreen() {
   u8g2.clearBuffer();
   char right[8];
   snprintf(right, sizeof(right), "%u", (unsigned)scanOrderCount);
-  drawHeader("SCANNER", right);
+  drawHeader("BLE SCANNER", right);
 
   uint8_t rows = listRows();
   for (uint8_t r = 0; r < rows; r++) {
@@ -412,7 +594,7 @@ static void drawScannerScreen() {
     u8g2.setFont(FONT_BODY);
     txtCenter(rowBaseline(1), "поиск BLE...");
   }
-  drawFooter("OK-инфо BACK-меню");
+  drawFooter("OK-инфо BACK-назад");
   u8g2.sendBuffer();
 }
 
@@ -574,6 +756,7 @@ void handleWatch(uint8_t ev) {
       int16_t ci = classicLookupByAddr(favorites[slot].addr);
       if (ci >= 0) {
         app.classicSel = ci;
+        app.classicDevFrom = SCR_WATCH;
         enterScreen(SCR_CLASSICDEV);
       } else {
         toast("NOT FOUND", 1200);
@@ -625,7 +808,7 @@ static void drawWatchScreen() {
   if (!n) {
     u8g2.setFont(FONT_BODY);
     txtCenter(rowBaseline(1), "список пуст");
-    txtCenter(rowBaseline(2), "WATCH в SCANNER");
+    txtCenter(rowBaseline(2), "WATCH в SCANNERS");
   }
   drawFooter("OK-инфо HOLD-удалить");
   u8g2.sendBuffer();
@@ -1129,79 +1312,11 @@ static void drawSettingsScreen() {
   u8g2.sendBuffer();
 }
 
-// ==================== CLEAR SCAN ====================
-// Отдельный режим: показывает только телефоны, наушники/гарнитуры, колонки и
-// микрофоны. Остальное (маячки, трекеры, часы, датчики) отфильтровано.
-// Метки: PH - телефон, HP - наушники, SP - колонка, MIC - микрофон,
-// "?" рядом с меткой = догадка по производителю, а не заявление устройства.
+// ==================== CLEAR SCAN УБРАН (v0.4.5) ====================
+// Раньше здесь был отдельный режим CLEAR SCAN. Он не нужен: то же самое
+// (телефоны/наушники/колонки/микрофоны) находит классический поиск, а метка
+// типа (PH/HP/SP/MIC) теперь показывается прямо в общем списке SCANNER.
 
-void clampClearList() {
-  uint8_t n = clearCount;
-  uint8_t rows = listRows();
-  if (!n) {
-    app.listCursor = 0;
-    app.listTop = 0;
-    return;
-  }
-  if (app.listCursor >= n) app.listCursor = n - 1;
-  if (app.listTop + rows > n) app.listTop = (n > rows) ? (n - rows) : 0;
-  if (app.listCursor < app.listTop) app.listTop = app.listCursor;
-  if (app.listCursor >= app.listTop + rows) app.listTop = app.listCursor - rows + 1;
-}
-
-void handleClear(uint8_t ev) {
-  if (ev == EV_UP || ev == EV_DOWN) {
-    if (!clearCount) return;
-    int16_t idx = app.selValid ? clearOrderIndexOf(app.selAddr) : (int16_t)app.listCursor;
-    if (idx < 0) idx = (int16_t)app.listCursor;
-    if (ev == EV_UP) {
-      if (idx > 0) idx--;
-    } else {
-      if (idx + 1 < (int16_t)clearCount) idx++;
-    }
-    app.listCursor = (uint8_t)idx;
-    memcpy(app.selAddr, devices[clearOrder[idx]].addr, 6);
-    app.selValid = true;
-    clampClearList();
-  } else if (ev == EV_OK || ev == EV_OK_LONG) {
-    if (!clearCount) return;
-    openDeviceScreen(clearOrder[app.listCursor], SCR_CLEAR);
-  } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
-    enterScreen(SCR_MENU);
-  }
-}
-
-static void drawClearScreen() {
-  u8g2.clearBuffer();
-  char right[10];
-  snprintf(right, sizeof(right), "%u", (unsigned)clearCount);
-  drawHeader("CLEAR SCAN", right);
-
-  uint8_t rows = listRows();
-  for (uint8_t r = 0; r < rows; r++) {
-    uint8_t i = app.listTop + r;
-    if (i >= clearCount) break;
-    int16_t di = clearOrder[i];
-    char tag[6];
-    kindTag(devices[di].kind, devices[di].kindConf, tag, sizeof(tag));
-    char nm[20];
-    deviceLabel(&devices[di], nm, 11);
-    char left[22];
-    snprintf(left, sizeof(left), "%s %s", tag, nm);
-    char rr[8];
-    snprintf(rr, sizeof(rr), "%d", devices[di].rssi);
-    bool sel = app.selValid && memcmp(devices[di].addr, app.selAddr, 6) == 0;
-    drawRow(r, left, rr, sel);
-  }
-  if (!clearCount) {
-    u8g2.setFont(FONT_BODY);
-    txtCenter(rowBaseline(1), "пока ничего");
-    txtCenter(rowBaseline(2), "телефоны/наушники/");
-    txtCenter(rowBaseline(3), "колонки/микрофоны");
-  }
-  drawFooter("PH/HP/SP/MIC  ?=догадка");
-  u8g2.sendBuffer();
-}
 
 // ==================== CLASSIC BT (BR/EDR) ====================
 // Вкладка ищет устройства по старому Bluetooth: телефоны в режиме "виден всем",
@@ -1255,9 +1370,10 @@ void handleClassic(uint8_t ev) {
   } else if (ev == EV_OK) {
     if (!classicCount) return;
     app.classicSel = classicOrder[app.classicCursor];
+    app.classicDevFrom = SCR_CLASSIC;
     enterScreen(SCR_CLASSICDEV);
   } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
-    enterScreen(SCR_MENU);
+    enterScreen(SCR_SCANNERS);
   }
 }
 
@@ -1265,7 +1381,7 @@ void handleClassicDev(uint8_t ev) {
   if (ev == EV_OK || ev == EV_OK_LONG) {
     if (app.classicSel >= 0) toggleFavoriteClassic(app.classicSel);
   } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
-    enterScreen(SCR_CLASSIC);
+    enterScreen((Screen)app.classicDevFrom);
   }
 }
 
@@ -1273,7 +1389,7 @@ static void drawClassicScreen() {
   u8g2.clearBuffer();
   char right[10];
   snprintf(right, sizeof(right), "%u%s", (unsigned)classicCount, classicScanning ? "*" : "");
-  drawHeader("CLASSIC BT", right);
+  drawHeader("CLASSIC SCANNER", right);
 
   uint8_t rows = listRows();
   for (uint8_t r = 0; r < rows; r++) {
@@ -1383,7 +1499,6 @@ void handleManager(uint8_t ev) {
       app.sortMode = (uint8_t)((app.sortMode + 1) % 3);
       storageSaveSettings();
       buildSortedDeviceList();
-      buildClearList();
     } else if (app.mgrCursor == MGR_SETTINGS_ROW) {
       enterScreen(SCR_SETTINGS);
     }
@@ -1394,7 +1509,7 @@ void handleManager(uint8_t ev) {
 
 static void drawManagerScreen() {
   u8g2.clearBuffer();
-  drawHeader("MANAGER", webRunning ? "AP:ON" : "");
+  drawHeader("НАСТРОЙКИ ФОНА", webRunning ? "AP:ON" : "");
   uint8_t rows = listRows();
   uint8_t top = 0;
   if (app.mgrCursor >= rows) top = app.mgrCursor - rows + 1;
@@ -1544,7 +1659,9 @@ void drawCurrentScreen() {
   switch (app.screen) {
     case SCR_MENU: drawMenuScreen(); break;
     case SCR_RADAR: drawRadarScreen(); break;
+    case SCR_SCANNERS: drawScannersScreen(); break;
     case SCR_SCANNER: drawScannerScreen(); break;
+    case SCR_BLESCAN: drawBleScanScreen(); break;
     case SCR_DEVICE: drawDeviceScreen(); break;
     case SCR_REMOTE: drawRemoteScreen(); break;
     case SCR_WATCH: drawWatchScreen(); break;
@@ -1552,7 +1669,6 @@ void drawCurrentScreen() {
     case SCR_BLEFUN: drawBleFunScreen(); break;
     case SCR_TIMED: drawTimedScreen(); break;
     case SCR_TYPE: drawTypeScreen(); break;
-    case SCR_CLEAR: drawClearScreen(); break;
     case SCR_CLASSIC: drawClassicScreen(); break;
     case SCR_CLASSICDEV: drawClassicDevScreen(); break;
     case SCR_SLEEP: drawSleepScreen(); break;

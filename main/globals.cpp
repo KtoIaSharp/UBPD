@@ -15,9 +15,9 @@ volatile uint16_t slotRecycles = 0;
 int16_t scanOrder[MAX_DEVICES];
 uint8_t scanOrderCount = 0;
 
-// Отфильтрованный список для CLEAR SCAN (только телефон/наушники/колонка/микрофон)
-int16_t clearOrder[MAX_DEVICES];
-uint8_t clearCount = 0;
+// Общий список вкладки SCANNER (классика + BLE). Кодировка - см. globals.h.
+int16_t combOrder[MAX_DEVICES + MAX_CLASSIC];
+uint8_t combCount = 0;
 
 FavDevice favorites[MAX_FAVS];
 

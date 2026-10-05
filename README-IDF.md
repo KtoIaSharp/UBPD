@@ -97,7 +97,7 @@ Arduino сам генерировал прототипы (ctags) и вставл
 
 ```
 I (713) cpu_start: cpu freq: 240000000
-=== UBPD v0.4.0 ===
+=== UBPD v0.4.5 ===
 [i] Display: 128x64 rows=4
 [i] NVS: имя idx=2, радар=BLE, избранных=1        <- настройки от Arduino-сборки на месте
 I (751) BTDM_INIT: BT controller compile version [0f0c5a2]

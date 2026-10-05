@@ -29,7 +29,7 @@
 #include <esp_bt.h>
 #include <esp_gap_bt_api.h>
 
-#define UBPD_VERSION "0.4.0"
+#define UBPD_VERSION "0.4.5"
 
 // ---------- OLED 128x64, 4-пиновый модуль (VCC GND SCL SDA) ----------
 #define OLED_SDA 21
@@ -150,6 +150,9 @@
 #define FAV_GONE_MS 10000
 #define FRAME_RADAR_MS 60
 #define FRAME_UI_MS 120
+// Общий сканер (вкладка SCANNER): BLE и классика делят радиомодуль, поэтому
+// сканируем по очереди - столько миллисекунд на один режим, потом переключение.
+#define COMB_SWITCH_MS 6000
 
 // ==================== ТИПЫ ====================
 
@@ -180,9 +183,10 @@ enum BgState : uint8_t {
 enum SortMode : uint8_t { SORT_RSSI = 0, SORT_NAME, SORT_TYPE };
 
 enum Screen : uint8_t {
-  SCR_MENU = 0, SCR_RADAR, SCR_SCANNER, SCR_DEVICE, SCR_REMOTE, SCR_WATCH,
-  SCR_IDENTITY, SCR_BLEFUN, SCR_TIMED, SCR_TYPE, SCR_CLEAR, SCR_SLEEP,
-  SCR_SETTINGS, SCR_MANAGER, SCR_WEB, SCR_DIAG, SCR_CLASSIC, SCR_CLASSICDEV
+  SCR_MENU = 0, SCR_RADAR, SCR_SCANNERS, SCR_SCANNER, SCR_BLESCAN, SCR_DEVICE,
+  SCR_REMOTE, SCR_WATCH, SCR_IDENTITY, SCR_BLEFUN, SCR_TIMED, SCR_TYPE,
+  SCR_SLEEP, SCR_SETTINGS, SCR_MANAGER, SCR_WEB, SCR_DIAG, SCR_CLASSIC,
+  SCR_CLASSICDEV
 };
 
 enum BtnId : uint8_t { B_UP = 0, B_DOWN, B_OK, B_BACK, B_COUNT };
@@ -304,6 +308,14 @@ struct AppState {
   uint8_t classicCursor;
   uint8_t classicTop;
   int16_t classicSel;
+  // --- v0.4.5: SCANNERS (подменю + общий список classic/BLE) ---
+  uint8_t scannersCursor;   // выбор в подменю SCANNERS
+  uint8_t combCursor;       // курсор в общем списке
+  uint8_t combTop;          // верхняя видимая строка общего списка
+  int16_t combSel;          // закодированный выбор: >=0 BLE-индекс, <0 (-1-индекс) classic
+  bool combPhase;           // true = сейчас сканируем BLE, false = классику
+  uint32_t combSwitchAt;    // когда переключать режим
+  uint8_t classicDevFrom;   // откуда открыли карточку классики
 };
 
 struct RssiSample {

@@ -556,38 +556,27 @@ void buildSortedDeviceList() {
   checkFavorites(now);
 }
 
-// Список для CLEAR SCAN: берём уже отсортированный scanOrder и оставляем только
-// распознанные категории (телефон/наушники/колонка/микрофон).
-void buildClearList() {
-  clearCount = 0;
-  for (uint8_t i = 0; i < scanOrderCount && clearCount < MAX_DEVICES; i++) {
-    int16_t di = scanOrder[i];
-    if (devices[di].kind == KIND_NONE) continue;
-    clearOrder[clearCount++] = di;
+// Общий список вкладки SCANNER: классика + BLE в одном списке. Классика всегда
+// выше BLE (её нашёл отдельный поиск), внутри каждой группы порядок свой -
+// из classicOrder (по RSSI) и scanOrder (по режиму сортировки из MANAGER).
+void buildCombinedList() {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < classicCount && n < MAX_DEVICES + MAX_CLASSIC; i++) {
+    combOrder[n++] = (int16_t)(-1 - classicOrder[i]);
   }
+  for (uint8_t i = 0; i < scanOrderCount && n < MAX_DEVICES + MAX_CLASSIC; i++) {
+    combOrder[n++] = scanOrder[i];
+  }
+  combCount = n;
 
 #if SCAN_DEBUG
-  static uint8_t lastClear = 255;
-  if (clearCount != lastClear) {
-    lastClear = clearCount;
-    Serial.printf("[clear] распознано: %u\n", (unsigned)clearCount);
-    for (uint8_t i = 0; i < clearCount; i++) {
-      char tag[6];
-      char nm[20];
-      kindTag(devices[clearOrder[i]].kind, devices[clearOrder[i]].kindConf, tag, sizeof(tag));
-      deviceLabel(&devices[clearOrder[i]], nm, 16);
-      Serial.printf("   %s %s rssi=%d conf=%u%%\n", tag, nm,
-                    devices[clearOrder[i]].rssi, (unsigned)devices[clearOrder[i]].kindConf);
-    }
+  static uint8_t lastComb = 255;
+  if (combCount != lastComb) {
+    lastComb = combCount;
+    Serial.printf("[comb] всего: %u (classic %u + BLE %u)\n",
+                  (unsigned)combCount, (unsigned)classicCount, (unsigned)scanOrderCount);
   }
 #endif
-}
-
-int16_t clearOrderIndexOf(const uint8_t *addr) {
-  for (uint8_t i = 0; i < clearCount; i++) {
-    if (memcmp(devices[clearOrder[i]].addr, addr, 6) == 0) return (int16_t)i;
-  }
-  return -1;
 }
 
 int16_t scanOrderIndexOf(const uint8_t *addr) {
