@@ -10,6 +10,7 @@ idf_component_register(
         "hardware.cpp"
         "radar.cpp"
         "scanner.cpp"
+        "pcremote.cpp"
         "sleep.cpp"
         "storage.cpp"
         "ui.cpp"
@@ -20,6 +21,7 @@ idf_component_register(
         arduino
         u8g2
         bt
+        json
         nvs_flash
         esp_http_server
         esp_wifi

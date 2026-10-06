@@ -29,7 +29,7 @@
 #include <esp_bt.h>
 #include <esp_gap_bt_api.h>
 
-#define UBPD_VERSION "0.4.6"
+#define UBPD_VERSION "0.4.7"
 
 // ---------- OLED 128x64, 4-пиновый модуль (VCC GND SCL SDA) ----------
 #define OLED_SDA 21
@@ -38,6 +38,7 @@
 #define SCREEN_H 64
 #define FONT_BODY u8g2_font_5x7_t_cyrillic
 #define FONT_HEAD u8g2_font_6x12_t_cyrillic
+#define FONT_BIG  u8g2_font_inr33_t_cyrillic   // крупный шрифт для текста с ПК
 
 // ---------- Кнопки: кнопка -> GND, INPUT_PULLUP ----------
 // Плата ещё без кнопок: пока управление идёт через Serial (см. README).
@@ -114,6 +115,7 @@
 #define CONN_LINES 6
 #define CONN_LINE_LEN 27
 #define RADAR_PTS 16
+#define PC_MSG_LEN 64          // текст с ПК (PC REMOTE) на экран
 #define SERIAL_BAUD 115200
 
 // ---------- Classic Bluetooth (BR/EDR): вкладка CLASSIC BT ----------
@@ -186,7 +188,7 @@ enum Screen : uint8_t {
   SCR_MENU = 0, SCR_RADAR, SCR_SCANNERS, SCR_SCANNER, SCR_BLESCAN, SCR_DEVICE,
   SCR_REMOTE, SCR_WATCH, SCR_IDENTITY, SCR_BLEFUN, SCR_TIMED, SCR_TYPE,
   SCR_SLEEP, SCR_SETTINGS, SCR_MANAGER, SCR_BGSET, SCR_WEB, SCR_DIAG,
-  SCR_CLASSIC, SCR_CLASSICDEV
+  SCR_CLASSIC, SCR_CLASSICDEV, SCR_PCREMOTE
 };
 
 enum BtnId : uint8_t { B_UP = 0, B_DOWN, B_OK, B_BACK, B_COUNT };
@@ -317,6 +319,10 @@ struct AppState {
   bool combPhase;           // true = сейчас сканируем BLE, false = классику
   uint32_t combSwitchAt;    // когда переключать режим
   uint8_t classicDevFrom;   // откуда открыли карточку классики
+  // --- v0.4.7: PC REMOTE (текст с ПК на экран) ---
+  char pcMsg[PC_MSG_LEN];   // последнее сообщение с ПК
+  uint32_t pcMsgUntil;      // до какого времени показывать
+  uint16_t pcCount;         // сколько сообщений принято
 };
 
 struct RssiSample {

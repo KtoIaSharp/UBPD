@@ -50,6 +50,12 @@ input{background:#1d1d1d;border:1px solid #3a3a3a;color:#ddd;padding:3px 6px;wid
 <h2>НАСТРОЙКИ</h2>
 <div id="set" class="s">...</div>
 
+<h2>PC REMOTE — ТЕКСТ НА ЭКРАН</h2>
+<div class="s">Введи текст — он покажется на экране UBPD несколько секунд.
+<input id="oledt" value="ПРИВЕТ UBPD" style="width:180px">
+<button onclick="sendOled()">показать</button>
+<button onclick="cmd('/api/oled?clear=1')">стереть</button></div>
+
 <h2>ДАННЫЕ</h2>
 <button onclick="location='/api/log.csv'">Скачать RSSI-лог (CSV)</button>
 <button onclick="cmd('/api/nvs/reset')">Сбросить настройки</button>
@@ -58,6 +64,7 @@ input{background:#1d1d1d;border:1px solid #3a3a3a;color:#ddd;padding:3px 6px;wid
 <script>
 function esc(s){return (s||'').replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));}
 function cmd(u){fetch(u,{method:'POST'}).then(refresh);}
+function sendOled(){fetch('/api/oled?secs=5',{method:'POST',body:document.getElementById('oledt').value}).then(refresh);}
 function refresh(){fetch('/api/state').then(r=>r.json()).then(render).catch(e=>{});}
 function render(s){
  document.getElementById('ver').textContent='v'+s.ver;

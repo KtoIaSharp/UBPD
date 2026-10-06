@@ -3,9 +3,9 @@
 // ==================== ДАННЫЕ ЭКРАНОВ ====================
 const char *const MENU_ITEMS[] = {
   "RADAR", "SCANNERS", "DEVICE TYPE", "WATCH", "TIMED SCAN", "SLEEP WATCH",
-  "BLE FUN", "IDENTITY", "REMOTE", "WEB UI", "MANAGER", "DIAGNOSTICS"
+  "BLE FUN", "IDENTITY", "PC REMOTE", "REMOTE", "WEB UI", "MANAGER", "DIAGNOSTICS"
 };
-const uint8_t MENU_COUNT = 12;
+const uint8_t MENU_COUNT = 13;
 
 const char *const TYPE_NAMES[] = {
   "Unknown", "Audio", "HID", "Beacon", "Phone", "Computer",
@@ -42,6 +42,8 @@ const char *funModeName(uint8_t m) { return FUN_MODES[m < 3 ? m : 0]; }
 
 static uint32_t lastFrame = 0;
 static uint32_t lastListRefresh = 0;
+
+static void drawPcOverlay();
 
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 void uiInit() {
@@ -84,6 +86,9 @@ void uiInit() {
   app.combPhase = true;
   app.combSwitchAt = 0;
   app.classicDevFrom = SCR_MENU;
+  app.pcMsg[0] = 0;
+  app.pcMsgUntil = 0;
+  app.pcCount = 0;
 }
 
 const char *identityAdvName() {
@@ -158,7 +163,8 @@ void syncRadios() {
 
   // --- реклама: своя вкладка, иначе - только с разрешения MANAGER ---
   const char *wantAdv = nullptr;
-  if (app.screen == SCR_IDENTITY) wantAdv = identityAdvName();
+  if (app.screen == SCR_PCREMOTE) wantAdv = nullptr;  // PC REMOTE: радио отдано SPP
+  else if (app.screen == SCR_IDENTITY) wantAdv = identityAdvName();
   else if (app.screen == SCR_BLEFUN && app.funRunning) wantAdv = funNameAt(app.funIndex);
   else if (app.funRunning && bgAllows(BG_BLEFUN)) wantAdv = funNameAt(app.funIndex);
   else if (bgAllows(BG_IDENT)) wantAdv = identityAdvName();
@@ -248,7 +254,11 @@ void uiLoop() {
   if (now - lastFrame < frame) return;
   lastFrame = now;
   app.redraw = false;
-  drawCurrentScreen();
+  if (app.pcMsg[0] && (int32_t)(app.pcMsgUntil - millis()) > 0) {
+    drawPcOverlay();   // текст с ПК: на весь экран, базовый экран не рисуем (нет мигания)
+  } else {
+    drawCurrentScreen();
+  }
 }
 
 void screenTick() {
@@ -347,6 +357,7 @@ void handleEvent(uint8_t ev) {
     case SCR_TYPE: handleType(ev); break;
     case SCR_CLASSIC: handleClassic(ev); break;
     case SCR_CLASSICDEV: handleClassicDev(ev); break;
+    case SCR_PCREMOTE: handlePcRemote(ev); break;
     case SCR_SLEEP: handleSleep(ev); break;
     case SCR_SETTINGS: handleSettings(ev); break;
     case SCR_MANAGER: handleManager(ev); break;
@@ -389,10 +400,11 @@ void openMenuItem() {
     case 5: s = SCR_SLEEP; break;
     case 6: s = SCR_BLEFUN; break;
     case 7: s = SCR_IDENTITY; break;
-    case 8: s = SCR_REMOTE; break;
-    case 9: s = SCR_WEB; break;
-    case 10: s = SCR_MANAGER; break;
-    case 11: s = SCR_DIAG; break;
+    case 8: s = SCR_PCREMOTE; break;
+    case 9: s = SCR_REMOTE; break;
+    case 10: s = SCR_WEB; break;
+    case 11: s = SCR_MANAGER; break;
+    case 12: s = SCR_DIAG; break;
     default: break;
   }
   enterScreen(s);
@@ -1686,6 +1698,85 @@ static void drawDiagScreen() {
   drawFooter(foot);
   u8g2.sendBuffer();
 }
+// ==================== PC REMOTE (текст с ПК на экран) ====================
+// ПК открывает страницу WEB UI (http://192.168.4.1) и отправляет текст — он
+// показывается поверх любого экрана несколько секунд:
+//   POST /api/oled?secs=5   (тело запроса = текст)
+//   GET  /api/oled?clear=1  (стереть)
+void handlePcRemote(uint8_t ev) {
+  if (ev == EV_OK || ev == EV_OK_LONG) {
+    app.pcMsg[0] = 0;
+    app.pcMsgUntil = 0;
+  } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
+    enterScreen(SCR_MENU);
+  }
+}
+
+static void drawPcRemoteScreen() {
+  u8g2.clearBuffer();
+  char right[12];
+  snprintf(right, sizeof(right), "n%u", (unsigned)app.pcCount);
+  drawHeader("PC REMOTE", right);
+  u8g2.setFont(FONT_BODY);
+  char l[26];
+  txt(2, rowBaseline(0), "Bluetooth SPP");
+  snprintf(l, sizeof(l), "ПК: %s", pcRemoteConnected() ? "ПОДКЛЮЧЁН" : "ожидание...");
+  txt(2, rowBaseline(1), l);
+  txt(2, rowBaseline(2), "имя: UBPD");
+  txt(2, rowBaseline(3), app.pcMsg[0] ? "текст с ПК показан" : "JSON: oled/clear/state");
+  drawFooter("OK-стереть BACK-меню");
+  u8g2.sendBuffer();
+}
+
+// Текст с ПК: на весь экран крупным шрифтом (3-6 символов влезает легко).
+// Рисуем ТОЛЬКО его (базовый экран не рисуем) - поэтому не мигает.
+static void drawPcOverlay() {
+  u8g2.clearBuffer();
+  u8g2.setDrawColor(1);
+  u8g2.setFont(FONT_BIG);
+
+  int asc = u8g2.getAscent();
+  int desc = u8g2.getDescent();
+  int lineH = asc + desc + 2;
+  uint8_t maxLines = (uint8_t)(SCREEN_H / lineH);
+  if (maxLines < 1) maxLines = 1;
+  if (maxLines > 3) maxLines = 3;
+
+  char lines[4][48];
+  uint8_t nLines = 0;
+  size_t i = 0;
+  while (app.pcMsg[i] && nLines < maxLines) {
+    size_t k = 0;
+    lines[nLines][0] = 0;
+    while (app.pcMsg[i]) {
+      size_t beforeChar = i, kBefore = k;
+      uint8_t c = (uint8_t)app.pcMsg[i];
+      size_t adv = 1;
+      if ((c & 0xE0) == 0xC0) adv = 2;
+      else if ((c & 0xF0) == 0xE0) adv = 3;
+      else if ((c & 0xF8) == 0xF0) adv = 4;
+      for (size_t j = 0; j < adv && app.pcMsg[i] && k + 1 < sizeof(lines[0]); j++) lines[nLines][k++] = app.pcMsg[i++];
+      lines[nLines][k] = 0;
+      if (u8g2.getUTF8Width(lines[nLines]) > SCREEN_W - 4 && kBefore > 0) {
+        k = kBefore;
+        lines[nLines][k] = 0;
+        i = beforeChar;
+        break;
+      }
+    }
+    nLines++;
+  }
+  if (nLines == 0) nLines = 1;
+
+  int totalH = nLines * lineH;
+  int y0 = (SCREEN_H - totalH) / 2 + asc;
+  for (uint8_t r = 0; r < nLines; r++) {
+    int w = u8g2.getUTF8Width(lines[r]);
+    u8g2.drawUTF8((SCREEN_W - w) / 2, y0 + r * lineH, lines[r]);
+  }
+  u8g2.sendBuffer();
+}
+
 // ==================== ДИСПЕТЧЕР ОТРИСОВКИ ====================
 static void drawMenuScreen() {
   u8g2.clearBuffer();
@@ -1718,6 +1809,7 @@ void drawCurrentScreen() {
     case SCR_TYPE: drawTypeScreen(); break;
     case SCR_CLASSIC: drawClassicScreen(); break;
     case SCR_CLASSICDEV: drawClassicDevScreen(); break;
+    case SCR_PCREMOTE: drawPcRemoteScreen(); break;
     case SCR_SLEEP: drawSleepScreen(); break;
     case SCR_SETTINGS: drawSettingsScreen(); break;
     case SCR_MANAGER: drawManagerScreen(); break;

@@ -137,6 +137,11 @@ void handleClassicDev(uint8_t ev);
 void handleManager(uint8_t ev);
 void handleBgSet(uint8_t ev);
 void handleWeb(uint8_t ev);
+void handlePcRemote(uint8_t ev);
+// PC REMOTE: Bluetooth SPP-сервер + JSON (pcremote.cpp)
+void pcRemoteInit();
+void pcRemoteSend(const char *s);
+bool pcRemoteConnected();
 void drawCurrentScreen();
 void webInit();
 void webStop();

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net7.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>UbpdRemote</AssemblyName>
+    <RootNamespace>UbpdRemote</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <!-- net7.0-windows выбран осознанно: именно у него в пакете 32feet есть
+         реализация Bluetooth для Windows (у net8.0-windows только netstandard). -->
+    <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 32feet.NET: классический Bluetooth / SPP (RFCOMM) -->
+    <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.1.40" />
+  </ItemGroup>
+
+</Project>

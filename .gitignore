@@ -1,6 +1,8 @@
 # Arduino IDE and PlatformIO build output
 build/
 .pio/
+**/bin/
+**/obj/
 *.bin
 *.elf
 *.map

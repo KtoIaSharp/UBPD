@@ -317,6 +317,35 @@ static esp_err_t webApiBeep(httpd_req_t *req) {
   return sendText(req, "beep");
 }
 
+// PC REMOTE: текст на экран UBPD. Тело POST = текст, ?secs= сколько секунд.
+static esp_err_t webApiOled(httpd_req_t *req) {
+  char tmp[PC_MSG_LEN];
+  if (reqArg(req, "clear", tmp, sizeof(tmp))) {
+    app.pcMsg[0] = 0;
+    app.pcMsgUntil = 0;
+    return sendText(req, "cleared");
+  }
+  int secs = reqArgInt(req, "secs", 5);
+  if (secs < 1) secs = 1;
+  if (secs > 60) secs = 60;
+
+  char buf[PC_MSG_LEN];
+  size_t total = 0;
+  if (req->content_len > 0) {
+    int r = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (r > 0) total = (size_t)r;
+  }
+  buf[total] = 0;
+  if (total == 0) reqArg(req, "text", buf, sizeof(buf));  // запасной путь: ?text=
+
+  if (buf[0]) {
+    snprintf(app.pcMsg, sizeof(app.pcMsg), "%s", buf);
+    app.pcMsgUntil = millis() + (uint32_t)secs * 1000UL;
+    app.pcCount++;
+  }
+  return sendText(req, "ok");
+}
+
 static esp_err_t webApiReboot(httpd_req_t *req) {
   sendText(req, "reboot");
   vTaskDelay(pdMS_TO_TICKS(200));
@@ -346,6 +375,7 @@ static const httpd_uri_t ROUTES[] = {
     {"/api/settings", HTTP_GET, webApiSettings, nullptr},
     {"/api/log.csv", HTTP_GET, webApiLogCsv, nullptr},
     {"/api/beep", HTTP_GET, webApiBeep, nullptr},
+    {"/api/oled", HTTP_POST, webApiOled, nullptr},
     {"/api/nvs/reset", HTTP_GET, webApiNvsReset, nullptr},
     {"/api/reboot", HTTP_GET, webApiReboot, nullptr},
 };

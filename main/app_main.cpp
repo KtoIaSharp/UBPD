@@ -13,6 +13,7 @@ void setup() {
   storageLoad();
   buzzerApplyIdle();
   BLEDevice::init("UBPD");
+  pcRemoteInit();  // Bluetooth SPP-сервер для управления с ПК (вкладка PC REMOTE)
   splashScreen();
 
 #if SERIAL_CONTROL
