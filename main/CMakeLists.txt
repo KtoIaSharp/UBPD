@@ -11,6 +11,8 @@ idf_component_register(
         "radar.cpp"
         "scanner.cpp"
         "pcremote.cpp"
+        "sdcard.cpp"
+        "player.cpp"
         "sleep.cpp"
         "storage.cpp"
         "ui.cpp"
@@ -22,6 +24,8 @@ idf_component_register(
         u8g2
         bt
         json
+        fatfs
+        sdmmc
         nvs_flash
         esp_http_server
         esp_wifi

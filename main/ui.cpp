@@ -89,6 +89,9 @@ void uiInit() {
   app.pcMsg[0] = 0;
   app.pcMsgUntil = 0;
   app.pcCount = 0;
+  app.remoteMode = 0;
+  app.trackCursor = 0;
+  app.trackTop = 0;
 }
 
 const char *identityAdvName() {
@@ -135,9 +138,9 @@ void syncRadios() {
   if (!wantScan && app.screen != SCR_CLASSIC && app.screen != SCR_SCANNER &&
       bgAllows(BG_WATCHMON) && favCount() > 0 && !app.sleeping) wantScan = true;
 
-  if (app.screen == SCR_CLASSIC) {
+  if (app.screen == SCR_CLASSIC || app.screen == SCR_REMOTE) {
     // BLE и классика делят один радиомодуль: пока идёт классический поиск,
-    // BLE-скан молчит, и наоборот.
+    // BLE-скан молчит, и наоборот. REMOTE так ищет свои наушники по классике.
     classicScanStart();
   } else if (app.screen == SCR_SCANNER) {
     // Общий список: тот же один радиомодуль, поэтому BLE и классика идут по
@@ -231,6 +234,17 @@ void enterScreen(Screen s) {
       buildClassicList();
       clampClassicList();
       break;
+    case SCR_REMOTE:
+      app.classicTop = 0;
+      app.classicCursor = 0;
+      app.classicSel = -1;
+      app.remoteMode = 0;
+      app.trackCursor = 0;
+      app.trackTop = 0;
+      buildClassicList();
+      clampClassicList();
+      playerScanTracks();
+      break;
     case SCR_IDENTITY:
       app.identEditing = false;
       break;
@@ -279,7 +293,7 @@ void screenTick() {
     int16_t i = app.selValid ? scanOrderIndexOf(app.selAddr) : -1;
     if (i >= 0) app.listCursor = (uint8_t)i;
     clampList();
-  } else if (app.screen == SCR_CLASSIC) {
+  } else if (app.screen == SCR_CLASSIC || app.screen == SCR_REMOTE) {
     classicTick();  // поиск сам заканчивается - держим его запущенным
     if (now - lastListRefresh >= 1000) {
       lastListRefresh = now;
@@ -363,9 +377,7 @@ void handleEvent(uint8_t ev) {
     case SCR_MANAGER: handleManager(ev); break;
     case SCR_BGSET: handleBgSet(ev); break;
     case SCR_WEB: handleWeb(ev); break;
-    case SCR_REMOTE:
-      if (ev == EV_BACK || ev == EV_BACK_LONG) enterScreen(SCR_MENU);
-      break;
+    case SCR_REMOTE: handleRemote(ev); break;
     case SCR_DIAG:
       if (ev == EV_BACK || ev == EV_BACK_LONG) enterScreen(SCR_MENU);
       else if (ev == EV_OK || ev == EV_OK_LONG) app.diagPage = (uint8_t)((app.diagPage + 1) % 2);
@@ -383,7 +395,7 @@ void handleMenu(uint8_t ev) {
   } else if (ev == EV_OK_LONG) {
     // быстрая проверка пищалки из любого места меню
     buzzerTest();
-    toast("ТЕСТ ПИЩАЛКИ", 1200);
+    toast("ТЕСТ ВИБРО", 1200);
   } else if (ev == EV_OK) {
     openMenuItem();
   }
@@ -1221,7 +1233,7 @@ static void drawSleepScreen() {
 
 // ==================== SETTINGS ====================
 static const char *const SETTINGS_ROWS[] = {
-  "ПИЩАЛКА", "ТИП ПИЩАЛКИ", "СХЕМА ПИЩ.", "СИЛЬНЫЙ RSSI", "СОН: ИНТЕРВАЛ",
+  "ВИБРО", "СИЛА ВИБРО", "ИНВЕРСИЯ", "СИЛЬНЫЙ RSSI", "СОН: ИНТЕРВАЛ",
   "ЯРКОСТЬ", "ТОЧКА ДОСТУПА", "СБРОС НАСТРОЕК"
 };
 #define SETTINGS_ROWS_COUNT 8
@@ -1234,7 +1246,7 @@ void handleSettings(uint8_t ev) {
   } else if (ev == EV_OK_LONG) {
     if (app.settingsCursor == 0) {
       buzzerTest();
-      toast("ТЕСТ ПИЩАЛКИ", 1500);
+      toast("ТЕСТ ВИБРО", 1500);
     } else if (app.settingsCursor == 7) {
       storageReset();
       storageLoad();
@@ -1253,13 +1265,13 @@ void handleSettings(uint8_t ev) {
       case 1:
         app.buzzerPassive = !app.buzzerPassive;
         buzzerApplyIdle();
-        toast(app.buzzerPassive ? "ПАССИВНЫЙ" : "АКТИВНЫЙ", 1500);
+        toast(app.buzzerPassive ? "СЛАБО" : "СИЛЬНО", 1500);
         buzzerTest();
         break;
       case 2:
         app.buzzerInvert = !app.buzzerInvert;
         buzzerApplyIdle();
-        toast(app.buzzerInvert ? "5V СХЕМА" : "3.3V СХЕМА", 1500);
+        toast(app.buzzerInvert ? "ИНВЕРСИЯ" : "НОРМА", 1500);
         buzzerTest();
         break;
       case 3: {
@@ -1308,10 +1320,10 @@ static void drawSettingsScreen() {
 #endif
         break;
       case 1:
-        snprintf(right, sizeof(right), app.buzzerPassive ? "ПАССИВ" : "АКТИВ");
+        snprintf(right, sizeof(right), app.buzzerPassive ? "СЛАБО" : "СИЛЬНО");
         break;
       case 2:
-        snprintf(right, sizeof(right), app.buzzerInvert ? "5V (LOW)" : "3.3V (HI)");
+        snprintf(right, sizeof(right), app.buzzerInvert ? "ИНВЕРС" : "НОРМА");
         break;
       case 3: snprintf(right, sizeof(right), "%d dBm", app.strongRssi); break;
       case 4: snprintf(right, sizeof(right), "%u с", (unsigned)app.sleepInterval); break;
@@ -1588,14 +1600,128 @@ static void drawBgSetScreen() {
   u8g2.sendBuffer();
 }
 
-// ==================== ЗАГЛУШКИ ====================
+// ==================== REMOTE (A2DP-плеер) ====================
+// REMOTE — три режима:
+//   0) устройства: выбрать свои наушники/колонку и подключиться (A2DP+AVRCP);
+//   1) плеер: список *.wav из /UBPD/sounds, OK - играть, HOLD - рандом;
+//   2) AVRCP-пульт: UP/DOWN - громкость, OK - play/pause, HOLD - next.
+void handleRemote(uint8_t ev) {
+  if (app.remoteMode == 0) {
+    if (ev == EV_UP || ev == EV_DOWN) {
+      if (!classicCount) return;
+      int16_t idx = (int16_t)app.classicCursor;
+      if (ev == EV_UP) { if (idx > 0) idx--; }
+      else { if (idx + 1 < (int16_t)classicCount) idx++; }
+      app.classicCursor = (uint8_t)idx;
+      clampClassicList();
+    } else if (ev == EV_OK_LONG) {
+      app.remoteMode = 2;                      // в AVRCP-пульт
+    } else if (ev == EV_OK) {
+      if (!classicCount) return;
+      const ClassicDevice *d = &classics[classicOrder[app.classicCursor]];
+      playerConnect(d->addr);
+      playerPlay();
+      playerScanTracks();
+      app.remoteMode = 1;
+      app.trackCursor = 0;
+      toast("A2DP: подключение", 1500);
+    } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
+      enterScreen(SCR_MENU);
+    }
+  } else if (app.remoteMode == 1) {
+    uint8_t n = playerTrackCount();
+    if (ev == EV_UP || ev == EV_DOWN) {
+      if (!n) return;
+      int16_t idx = app.trackCursor;
+      if (ev == EV_UP) { if (idx > 0) idx--; }
+      else { if (idx + 1 < (int16_t)n) idx++; }
+      app.trackCursor = (uint8_t)idx;
+    } else if (ev == EV_OK) {
+      if (n) { playerPlayTrack(app.trackCursor); toast("PLAY", 900); }
+      else { playerUseTone(); playerPlay(); toast("ТЕСТ-ТОН", 900); }
+    } else if (ev == EV_OK_LONG) {
+      if (n) { playerPlayRandom(); toast("RANDOM", 900); }
+    } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
+      playerStop();
+      app.remoteMode = 0;
+    }
+  } else {
+    if (ev == EV_UP) { avrcVolUp(); toast("VOL+", 700); }
+    else if (ev == EV_DOWN) { avrcVolDown(); toast("VOL-", 700); }
+    else if (ev == EV_OK) { avrcPlayPause(); toast("PLAY/PAUSE", 900); }
+    else if (ev == EV_OK_LONG) { avrcNext(); toast("NEXT", 900); }
+    else if (ev == EV_BACK_LONG) { avrcPrev(); toast("PREV", 900); }
+    else if (ev == EV_BACK) { app.remoteMode = 0; }
+  }
+}
+
 static void drawRemoteScreen() {
-  drawTextScreen("REMOTE (AVRCP)", "",
-                 "AVRCP - только classic\n"
-                 "Bluetooth, а на ESP32 он\n"
-                 "не живёт вместе с BLE+\n"
-                 "Wi-Fi. План: режим v0.3",
-                 "только для СВОИХ");
+  u8g2.clearBuffer();
+  char right[12];
+
+  if (app.remoteMode == 0) {
+    snprintf(right, sizeof(right), "%u", (unsigned)classicCount);
+    drawHeader("REMOTE:BT", right);
+    uint8_t rows = listRows();
+    for (uint8_t r = 0; r < rows; r++) {
+      uint8_t i = app.classicTop + r;
+      if (i >= classicCount) break;
+      const ClassicDevice *d = &classics[classicOrder[i]];
+      char nm[20];
+      classicLabel(d, nm, 12);
+      char tag[8];
+      if (d->kind != KIND_NONE) kindTag(d->kind, d->kindConf, tag, sizeof(tag));
+      else snprintf(tag, sizeof(tag), "%s", "BT");
+      char left[24];
+      snprintf(left, sizeof(left), "%s %s", tag, nm);
+      char rr[8];
+      if (d->rssi == -128) snprintf(rr, sizeof(rr), "--");
+      else snprintf(rr, sizeof(rr), "%d", d->rssi);
+      drawRow(r, left, rr, i == app.classicCursor);
+    }
+    if (!classicCount) {
+      u8g2.setFont(FONT_BODY);
+      txtCenter(rowBaseline(1), "поиск наушников...");
+      txtCenter(rowBaseline(2), "включи их, режим");
+      txtCenter(rowBaseline(3), "\"виден всем\"");
+    }
+    drawFooter("OK-подкл HOLD-пульт");
+    u8g2.sendBuffer();
+    return;
+  }
+
+  if (app.remoteMode == 1) {
+    uint8_t n = playerTrackCount();
+    if (playerPlaying()) snprintf(right, sizeof(right), "PLAY");
+    else snprintf(right, sizeof(right), "%u", (unsigned)n);
+    drawHeader("REMOTE:PLAY", right);
+    uint8_t rows = listRows();
+    uint8_t top = 0;
+    if (app.trackCursor >= rows) top = app.trackCursor - rows + 1;
+    for (uint8_t r = 0; r < rows; r++) {
+      uint8_t i = top + r;
+      if (i >= n) break;
+      drawRow(r, playerTrackName(i), "", i == app.trackCursor);
+    }
+    if (!n) {
+      u8g2.setFont(FONT_BODY);
+      txtCenter(rowBaseline(1), "нет *.wav в /UBPD");
+      txtCenter(rowBaseline(2), "sounds - OK=тест-тон");
+    }
+    drawFooter("OK-играть HOLD-рандом");
+    u8g2.sendBuffer();
+    return;
+  }
+
+  // AVRCP-пульт
+  drawHeader("REMOTE:CTRL", playerConnected() ? "LINK" : "");
+  u8g2.setFont(FONT_BODY);
+  txt(2, rowBaseline(0), "AVRCP: своё устройство");
+  txt(2, rowBaseline(1), "UP/DOWN - громкость");
+  txt(2, rowBaseline(2), "OK - play/pause");
+  txt(2, rowBaseline(3), "HOLD - next  HOLD BACK - prev");
+  drawFooter("BACK-назад");
+  u8g2.sendBuffer();
 }
 
 static void drawWebScreen() {
@@ -1789,7 +1915,7 @@ static void drawMenuScreen() {
     if (i >= MENU_COUNT) break;
     drawRow(r, MENU_ITEMS[i], "", i == app.menuCursor);
   }
-  drawFooter(app.funRunning ? "* BLE FUN в фоне" : "HOLD OK-пищалка");
+  drawFooter(app.funRunning ? "* BLE FUN в фоне" : "HOLD OK-вибро");
   u8g2.sendBuffer();
 }
 

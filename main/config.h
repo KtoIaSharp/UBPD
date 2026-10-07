@@ -29,7 +29,7 @@
 #include <esp_bt.h>
 #include <esp_gap_bt_api.h>
 
-#define UBPD_VERSION "0.4.7"
+#define UBPD_VERSION "0.5.0"
 
 // ---------- OLED 128x64, 4-пиновый модуль (VCC GND SCL SDA) ----------
 #define OLED_SDA 21
@@ -85,13 +85,15 @@
 // GPIO27, эмиттер на GND, коллектор на "-" буззера, "+" на 5V. Тогда ставим INVERT 0.
 //
 // Малый 3.3 В буззер (до ~20 мА) можно вешать на пин напрямую.
-#define BUZZER_ENABLED 0   // пока ЗАБЫЛИ про буззер: 1 - включить обратно
+// На GPIO27 теперь ВИБРО-модуль (PWM), а не буззер. Имена BUZZER_* оставлены,
+// чтобы не менять вызовы: по сути это haptic.
+#define BUZZER_ENABLED 1
 #define BUZZER_ACTIVE 1
 #define BUZZER_INVERT 0
 #define BUZZER_PIN 27
-#define BUZZER_FREQ 2200
-#define BUZZER_ON_MS 80
-#define BUZZER_GAP_MS 120
+#define BUZZER_FREQ 20000   // ~20 кГц, выше слышимого (мотор не пищит)
+#define BUZZER_ON_MS 150
+#define BUZZER_GAP_MS 140
 
 // Отладка пищалки в Serial (1 - печатать каждое событие)
 #define BUZZER_DEBUG 0
@@ -323,6 +325,10 @@ struct AppState {
   char pcMsg[PC_MSG_LEN];   // последнее сообщение с ПК
   uint32_t pcMsgUntil;      // до какого времени показывать
   uint16_t pcCount;         // сколько сообщений принято
+  // --- v0.5: REMOTE (плеер/пульт) ---
+  uint8_t remoteMode;       // 0 - устройства, 1 - треки, 2 - AVRCP-пульт
+  uint8_t trackCursor;
+  uint8_t trackTop;
 };
 
 struct RssiSample {
