@@ -68,7 +68,9 @@ void sdInit() {
   mount_cfg.allocation_unit_size = 16 * 1024;
 
   sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-  host.max_freq_khz = 1000;   // медленно: на макетке/длинных проводах надёжнее
+  // Скорость подбираем: для стриминга звука (176 КБ/с) нужно ≥ 4 МГц, но на
+  // макетке/длинных проводах надёжнее ниже. Пробуем от быстрого к медленному.
+  static const int freqLadder[4] = {20000, 10000, 4000, 1000};
 
   spi_bus_config_t bus = {};
   bus.mosi_io_num = SD_PIN_MOSI;
@@ -90,12 +92,20 @@ void sdInit() {
   slot.gpio_cs = (gpio_num_t)SD_PIN_CS;
   slot.host_id = (spi_host_device_t)host.slot;
 
-  for (int attempt = 1; attempt <= 3; attempt++) {
-    ret = esp_vfs_fat_sdspi_mount(SD_MOUNT, &host, &slot, &mount_cfg, &s_card);
-    if (ret == ESP_OK) break;
-    Serial.printf("[i] SD: попытка %d не удалась (%d)\n", attempt, (int)ret);
-    s_card = nullptr;
-    vTaskDelay(pdMS_TO_TICKS(120));
+  ret = ESP_FAIL;   // сброс: иначе здесь остался бы результат spi_bus_initialize (OK)
+  for (size_t fi = 0; fi < sizeof(freqLadder) / sizeof(freqLadder[0]) && ret != ESP_OK; fi++) {
+    host.max_freq_khz = freqLadder[fi];
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      ret = esp_vfs_fat_sdspi_mount(SD_MOUNT, &host, &slot, &mount_cfg, &s_card);
+      if (ret == ESP_OK) break;
+      s_card = nullptr;
+      vTaskDelay(pdMS_TO_TICKS(120));
+    }
+    if (ret == ESP_OK) {
+      Serial.printf("[i] SD: смонтирована на %d кГц\n", freqLadder[fi]);
+    } else {
+      Serial.printf("[i] SD: %d кГц не вышло (%d)\n", freqLadder[fi], (int)ret);
+    }
   }
 
   if (ret != ESP_OK) {

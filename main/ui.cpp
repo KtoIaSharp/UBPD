@@ -90,6 +90,7 @@ void uiInit() {
   app.pcMsgUntil = 0;
   app.pcCount = 0;
   app.remoteMode = 0;
+  app.remoteConnectMode = 0;
   app.trackCursor = 0;
   app.trackTop = 0;
 }
@@ -136,12 +137,17 @@ void syncRadios() {
   // --- сканирование: своя вкладка + фоновый мониторинг WATCH ---
   bool wantScan = screenWantsScan(app.screen);
   if (!wantScan && app.screen != SCR_CLASSIC && app.screen != SCR_SCANNER &&
+      app.screen != SCR_PCPOPUP &&
       bgAllows(BG_WATCHMON) && favCount() > 0 && !app.sleeping) wantScan = true;
 
-  if (app.screen == SCR_CLASSIC || app.screen == SCR_REMOTE) {
-    // BLE и классика делят один радиомодуль: пока идёт классический поиск,
-    // BLE-скан молчит, и наоборот. REMOTE так ищет свои наушники по классике.
+  if (app.screen == SCR_CLASSIC) {
     classicScanStart();
+  } else if (app.screen == SCR_REMOTE) {
+    // BLE и классика делят один радиомодуль: пока идёт классический поиск,
+    // BLE-скан молчит, и наоборот. В списке устройств REMOTE ищем свои наушники,
+    // а в плеере/пульте поиск глушим - радио нужно A2DP/AVRCP.
+    if (app.remoteMode == 0) classicScanStart();
+    else classicScanStop();
   } else if (app.screen == SCR_SCANNER) {
     // Общий список: тот же один радиомодуль, поэтому BLE и классика идут по
     // очереди (combPhase переключается в screenTick). Найденное копится в обоих
@@ -166,7 +172,7 @@ void syncRadios() {
 
   // --- реклама: своя вкладка, иначе - только с разрешения MANAGER ---
   const char *wantAdv = nullptr;
-  if (app.screen == SCR_PCREMOTE) wantAdv = nullptr;  // PC REMOTE: радио отдано SPP
+  if (app.screen == SCR_PCREMOTE || app.screen == SCR_PCPOPUP) wantAdv = nullptr;  // PC REMOTE: радио отдано SPP
   else if (app.screen == SCR_IDENTITY) wantAdv = identityAdvName();
   else if (app.screen == SCR_BLEFUN && app.funRunning) wantAdv = funNameAt(app.funIndex);
   else if (app.funRunning && bgAllows(BG_BLEFUN)) wantAdv = funNameAt(app.funIndex);
@@ -278,6 +284,18 @@ void uiLoop() {
 void screenTick() {
   uint32_t now = millis();
 
+  // Входящее Bluetooth-подключение (SPP): всплывающее окно с выбором действия.
+  if (app.screen != SCR_PCPOPUP) {
+    uint8_t peer[6];
+    if (pcRemoteTakeIncoming(peer)) {
+      memcpy(app.pcPeer, peer, 6);
+      app.pcBack = app.screen;
+      app.pcChoice = 0;
+      enterScreen(SCR_PCPOPUP);
+      buzzerPlay(1);   // вибро-уведомление
+    }
+  }
+
   if (app.screen != SCR_CLASSIC && app.screen != SCR_SCANNER &&
       (app.screen == SCR_RADAR || app.screen == SCR_BLESCAN || app.screen == SCR_WATCH ||
        app.screen == SCR_TYPE || app.screen == SCR_WEB ||
@@ -372,6 +390,7 @@ void handleEvent(uint8_t ev) {
     case SCR_CLASSIC: handleClassic(ev); break;
     case SCR_CLASSICDEV: handleClassicDev(ev); break;
     case SCR_PCREMOTE: handlePcRemote(ev); break;
+    case SCR_PCPOPUP: handlePcPopup(ev); break;
     case SCR_SLEEP: handleSleep(ev); break;
     case SCR_SETTINGS: handleSettings(ev); break;
     case SCR_MANAGER: handleManager(ev); break;
@@ -1615,16 +1634,24 @@ void handleRemote(uint8_t ev) {
       app.classicCursor = (uint8_t)idx;
       clampClassicList();
     } else if (ev == EV_OK_LONG) {
-      app.remoteMode = 2;                      // в AVRCP-пульт
+      app.remoteConnectMode = app.remoteConnectMode ? 0 : 1;   // FULL <-> CTRL
+      toast(app.remoteConnectMode ? "РЕЖИМ: CTRL" : "РЕЖИМ: FULL", 1200);
     } else if (ev == EV_OK) {
       if (!classicCount) return;
       const ClassicDevice *d = &classics[classicOrder[app.classicCursor]];
-      playerConnect(d->addr);
-      playerPlay();
-      playerScanTracks();
-      app.remoteMode = 1;
-      app.trackCursor = 0;
-      toast("A2DP: подключение", 1500);
+      playerConnect(d->addr);            // A2DP+AVRCP (и ACL для AVRCP)
+      if (app.remoteConnectMode == 0) {
+        playerScanTracks();
+        if (playerTrackCount()) playerPlayTrack(0);
+        else { playerUseTone(); playerPlay(); toast("НЕТ ФАЙЛОВ НА SD - ТОН", 2500); }
+        app.trackCursor = 0;
+        app.remoteMode = 1;              // FULL: плеер, играем
+        toast("FULL: играю", 1500);
+      } else {
+        app.remoteMode = 2;              // CTRL: только управление, без воспроизведения
+        toast("CTRL: управление", 1500);
+      }
+      syncRadios();                      // в плеере/пульте поиск больше не нужен
     } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
       enterScreen(SCR_MENU);
     }
@@ -1632,18 +1659,25 @@ void handleRemote(uint8_t ev) {
     uint8_t n = playerTrackCount();
     if (ev == EV_UP || ev == EV_DOWN) {
       if (!n) return;
-      int16_t idx = app.trackCursor;
-      if (ev == EV_UP) { if (idx > 0) idx--; }
-      else { if (idx + 1 < (int16_t)n) idx++; }
+      int16_t idx = (int16_t)playerCurrentTrack();
+      if (ev == EV_UP) idx = (idx > 0) ? idx - 1 : (int16_t)n - 1;
+      else idx = (idx + 1 < (int16_t)n) ? idx + 1 : 0;
+      playerPlayTrack((uint8_t)idx);         // переключение сразу играет
       app.trackCursor = (uint8_t)idx;
     } else if (ev == EV_OK) {
-      if (n) { playerPlayTrack(app.trackCursor); toast("PLAY", 900); }
+      if (playerPlaying()) { playerPause(); toast("ПАУЗА", 800); }
+      else if (n) { playerPlay(); toast("ИГРАЮ", 800); }
       else { playerUseTone(); playerPlay(); toast("ТЕСТ-ТОН", 900); }
     } else if (ev == EV_OK_LONG) {
-      if (n) { playerPlayRandom(); toast("RANDOM", 900); }
-    } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
-      playerStop();
+      if (n) { playerPlayRandom(); app.trackCursor = playerCurrentTrack(); toast("RANDOM", 900); }
+    } else if (ev == EV_BACK_LONG) {
+      playerStop();                          // HOLD BACK - выйти из REMOTE совсем
       app.remoteMode = 0;
+      enterScreen(SCR_MENU);
+    } else if (ev == EV_BACK) {
+      playerStop();                          // назад к списку устройств
+      app.remoteMode = 0;
+      syncRadios();
     }
   } else {
     if (ev == EV_UP) { avrcVolUp(); toast("VOL+", 700); }
@@ -1651,17 +1685,57 @@ void handleRemote(uint8_t ev) {
     else if (ev == EV_OK) { avrcPlayPause(); toast("PLAY/PAUSE", 900); }
     else if (ev == EV_OK_LONG) { avrcNext(); toast("NEXT", 900); }
     else if (ev == EV_BACK_LONG) { avrcPrev(); toast("PREV", 900); }
-    else if (ev == EV_BACK) { app.remoteMode = 0; }
+    else if (ev == EV_BACK) { app.remoteMode = 0; syncRadios(); }
   }
+}
+
+// Обрезка UTF-8 строки справа по ширине в пикселях (для центрирования имени).
+static void clipUtf8(char *s, int16_t maxW) {
+  while (s[0] && txtW(s) > maxW) {
+    size_t len = strlen(s);
+    size_t i = len;
+    while (i > 0 && ((uint8_t)s[i - 1] & 0xC0) == 0x80) i--;
+    if (i > 0) i--;
+    s[i] = 0;
+  }
+}
+
+// Экран плеера (FULL): имя трека, полоса прогресса, номер. Не список, а плеер.
+static void drawRemotePlayerScreen() {
+  u8g2.clearBuffer();
+  uint8_t n = playerTrackCount();
+  uint8_t cur = playerCurrentTrack();
+  drawHeader("ПЛЕЕР", playerPlaying() ? "PLAY" : "STOP");
+
+  char nm[44];
+  if (n) snprintf(nm, sizeof(nm), "%s", playerTrackName(cur));
+  else snprintf(nm, sizeof(nm), sdMounted() ? "нет *.wav в /UBPD" : "SD НЕ ПОДКЛЮЧЕНА");
+  u8g2.setFont(FONT_HEAD);
+  clipUtf8(nm, SCREEN_W - 6);
+  txtCenter(26, nm);
+
+  uint8_t prog = playerProgress();
+  u8g2.drawFrame(8, 33, SCREEN_W - 16, 7);
+  if (prog) {
+    int16_t w = (int16_t)((SCREEN_W - 18) * prog / 100);
+    if (w > 0) u8g2.drawBox(9, 34, (uint8_t)w, 5);
+  }
+
+  u8g2.setFont(FONT_BODY);
+  char idx[40];
+  if (n) snprintf(idx, sizeof(idx), "ТРЕК %u/%u", (unsigned)(cur + 1), (unsigned)n);
+  else snprintf(idx, sizeof(idx), sdMounted() ? "положи WAV в sounds" : "проверь карту/контакты");
+  txtCenter(48, idx);
+
+  drawFooter("OK-плей U/D HOLD-выход");
+  u8g2.sendBuffer();
 }
 
 static void drawRemoteScreen() {
   u8g2.clearBuffer();
-  char right[12];
 
   if (app.remoteMode == 0) {
-    snprintf(right, sizeof(right), "%u", (unsigned)classicCount);
-    drawHeader("REMOTE:BT", right);
+    drawHeader("REMOTE:BT", app.remoteConnectMode ? "CTRL" : "FULL");
     uint8_t rows = listRows();
     for (uint8_t r = 0; r < rows; r++) {
       uint8_t i = app.classicTop + r;
@@ -1685,31 +1759,13 @@ static void drawRemoteScreen() {
       txtCenter(rowBaseline(2), "включи их, режим");
       txtCenter(rowBaseline(3), "\"виден всем\"");
     }
-    drawFooter("OK-подкл HOLD-пульт");
+    drawFooter("OK-подкл HOLD-режим");
     u8g2.sendBuffer();
     return;
   }
 
   if (app.remoteMode == 1) {
-    uint8_t n = playerTrackCount();
-    if (playerPlaying()) snprintf(right, sizeof(right), "PLAY");
-    else snprintf(right, sizeof(right), "%u", (unsigned)n);
-    drawHeader("REMOTE:PLAY", right);
-    uint8_t rows = listRows();
-    uint8_t top = 0;
-    if (app.trackCursor >= rows) top = app.trackCursor - rows + 1;
-    for (uint8_t r = 0; r < rows; r++) {
-      uint8_t i = top + r;
-      if (i >= n) break;
-      drawRow(r, playerTrackName(i), "", i == app.trackCursor);
-    }
-    if (!n) {
-      u8g2.setFont(FONT_BODY);
-      txtCenter(rowBaseline(1), "нет *.wav в /UBPD");
-      txtCenter(rowBaseline(2), "sounds - OK=тест-тон");
-    }
-    drawFooter("OK-играть HOLD-рандом");
-    u8g2.sendBuffer();
+    drawRemotePlayerScreen();
     return;
   }
 
@@ -1854,6 +1910,73 @@ static void drawPcRemoteScreen() {
   u8g2.sendBuffer();
 }
 
+// ==================== ВСПЛЫВАЮЩЕЕ ОКНО ВХОДЯЩЕГО ПОДКЛЮЧЕНИЯ ====================
+// Кто-то (телефон/ПК) подключился к нашему SPP-серверу "UBPD" - спрашиваем,
+// что с ним делать. Соединение уже установлено; FULL/CTRL переиспользуют его
+// для A2DP-плеера или AVRCP-пульта, "ПК" оставляет как канал PC REMOTE.
+static const char *const PC_POPUP_ROWS[] = {
+  "FULL: играть",       // A2DP+AVRCP, запустить плеер
+  "CTRL: пульт",        // только AVRCP-управление
+  "ПК: SPP-терминал",   // оставить как канал PC REMOTE
+  "ОТКАЗ (отключить)"   // разорвать соединение
+};
+#define PC_POPUP_COUNT 4
+
+void handlePcPopup(uint8_t ev) {
+  if (ev == EV_UP) {
+    if (app.pcChoice) app.pcChoice--;
+  } else if (ev == EV_DOWN) {
+    if (app.pcChoice + 1 < PC_POPUP_COUNT) app.pcChoice++;
+  } else if (ev == EV_OK || ev == EV_OK_LONG) {
+    uint8_t peer[6];
+    memcpy(peer, app.pcPeer, 6);
+    if (app.pcChoice == 0) {
+      enterScreen(SCR_REMOTE);            // сбросит remoteMode, задаём ниже
+      playerConnect(peer);
+      playerScanTracks();
+      if (playerTrackCount()) playerPlayTrack(0);
+      else { playerUseTone(); playerPlay(); toast("НЕТ ФАЙЛОВ НА SD - ТОН", 2500); }
+      app.trackCursor = 0;
+      app.remoteMode = 1;                 // FULL: плеер, играем
+      syncRadios();                       // поиск больше не нужен - радио под A2DP
+      toast("FULL: играю", 1500);
+    } else if (app.pcChoice == 1) {
+      avrcInit();
+      enterScreen(SCR_REMOTE);
+      playerConnect(peer);
+      app.remoteMode = 2;                 // CTRL: AVRCP-пульт
+      syncRadios();
+      toast("CTRL: управление", 1500);
+    } else if (app.pcChoice == 2) {
+      enterScreen(SCR_PCREMOTE);          // ПК: оставляем SPP как есть
+    } else {
+      pcRemoteDisconnect();               // ОТКАЗ
+      enterScreen(app.pcBack);
+    }
+  } else if (ev == EV_BACK || ev == EV_BACK_LONG) {
+    pcRemoteDisconnect();
+    enterScreen(app.pcBack);
+  }
+}
+
+static void drawPcPopupScreen() {
+  u8g2.clearBuffer();
+  char nm[16];
+  int16_t idx = classicLookupByAddr(app.pcPeer);
+  if (idx >= 0) classicLabel(&classics[idx], nm, 12);
+  else snprintf(nm, sizeof(nm), "%02X:%02X:%02X", app.pcPeer[3], app.pcPeer[4], app.pcPeer[5]);
+  char title[32];
+  snprintf(title, sizeof(title), "ВХОД: %s", nm);
+  drawHeader(title, "BT");
+
+  uint8_t rows = listRows();
+  for (uint8_t r = 0; r < rows && r < PC_POPUP_COUNT; r++) {
+    drawRow(r, PC_POPUP_ROWS[r], "", r == app.pcChoice);
+  }
+  drawFooter("OK-выбор  BACK-отказ");
+  u8g2.sendBuffer();
+}
+
 // Текст с ПК: на весь экран крупным шрифтом (3-6 символов влезает легко).
 // Рисуем ТОЛЬКО его (базовый экран не рисуем) - поэтому не мигает.
 static void drawPcOverlay() {
@@ -1936,6 +2059,7 @@ void drawCurrentScreen() {
     case SCR_CLASSIC: drawClassicScreen(); break;
     case SCR_CLASSICDEV: drawClassicDevScreen(); break;
     case SCR_PCREMOTE: drawPcRemoteScreen(); break;
+    case SCR_PCPOPUP: drawPcPopupScreen(); break;
     case SCR_SLEEP: drawSleepScreen(); break;
     case SCR_SETTINGS: drawSettingsScreen(); break;
     case SCR_MANAGER: drawManagerScreen(); break;

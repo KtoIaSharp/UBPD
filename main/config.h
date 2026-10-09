@@ -29,7 +29,7 @@
 #include <esp_bt.h>
 #include <esp_gap_bt_api.h>
 
-#define UBPD_VERSION "0.5.0"
+#define UBPD_VERSION "0.5.2"
 
 // ---------- OLED 128x64, 4-пиновый модуль (VCC GND SCL SDA) ----------
 #define OLED_SDA 21
@@ -190,7 +190,7 @@ enum Screen : uint8_t {
   SCR_MENU = 0, SCR_RADAR, SCR_SCANNERS, SCR_SCANNER, SCR_BLESCAN, SCR_DEVICE,
   SCR_REMOTE, SCR_WATCH, SCR_IDENTITY, SCR_BLEFUN, SCR_TIMED, SCR_TYPE,
   SCR_SLEEP, SCR_SETTINGS, SCR_MANAGER, SCR_BGSET, SCR_WEB, SCR_DIAG,
-  SCR_CLASSIC, SCR_CLASSICDEV, SCR_PCREMOTE
+  SCR_CLASSIC, SCR_CLASSICDEV, SCR_PCREMOTE, SCR_PCPOPUP
 };
 
 enum BtnId : uint8_t { B_UP = 0, B_DOWN, B_OK, B_BACK, B_COUNT };
@@ -327,8 +327,13 @@ struct AppState {
   uint16_t pcCount;         // сколько сообщений принято
   // --- v0.5: REMOTE (плеер/пульт) ---
   uint8_t remoteMode;       // 0 - устройства, 1 - треки, 2 - AVRCP-пульт
+  uint8_t remoteConnectMode; // 0 FULL (A2DP+AVRCP), 1 CTRL (только управление)
   uint8_t trackCursor;
   uint8_t trackTop;
+  // --- v0.5.1: всплывающее окно входящего Bluetooth-подключения ---
+  uint8_t pcChoice;         // выбранный пункт в попапе
+  uint8_t pcPeer[6];        // MAC входящего устройства
+  Screen pcBack;            // куда вернуться при отказе
 };
 
 struct RssiSample {

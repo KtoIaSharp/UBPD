@@ -38,3 +38,6 @@ CONFIG_ESP32_WIFI_RX_IRAM_OPT=n
 # ---- FATFS: длинные имена ----
 # Нужны для имён вида ble_names, *.wav, скриптов и т.п. (8.3 не хватает).
 CONFIG_FATFS_LFN_HEAP=y
+# UTF-8 имена (а не ANSI/OEM cp437): тогда кириллица в названиях песен не
+# схлопывается в короткое имя вида NAUTIL~1.WAV.
+CONFIG_FATFS_API_ENCODING_UTF_8=y

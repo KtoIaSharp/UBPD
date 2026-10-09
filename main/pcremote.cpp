@@ -21,6 +21,8 @@
 
 static uint32_t sConnHandle = 0xFFFFFFFF;
 static bool sConnected = false;
+static volatile bool sIncoming = false;   // входящее подключение - показать окно
+static uint8_t sPeer[6] = {0};
 
 static char sLine[256];
 static size_t sLineLen = 0;
@@ -31,6 +33,17 @@ static uint32_t sAnimLeft = 0;   // сколько байт кадров ещё 
 static bool sAnimMode = false;
 
 bool pcRemoteConnected() { return sConnected; }
+
+bool pcRemoteTakeIncoming(uint8_t *out) {
+  if (!sIncoming) return false;
+  memcpy(out, sPeer, 6);
+  sIncoming = false;
+  return true;
+}
+
+void pcRemoteDisconnect() {
+  if (sConnected) esp_spp_disconnect(sConnHandle);
+}
 
 void pcRemoteSend(const char *s) {
   if (!sConnected) return;
@@ -111,10 +124,12 @@ static void pcSppCb(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
     case ESP_SPP_SRV_OPEN_EVT:
       sConnHandle = param->srv_open.handle;
       sConnected = true;
+      memcpy(sPeer, param->srv_open.rem_bda, 6);
+      sIncoming = true;
       sLineLen = 0;
       sAnimMode = false;
       sFrameFill = 0;
-      Serial.printf("[i] PC REMOTE: ПК подключён (%08X)\n", (unsigned)sConnHandle);
+      Serial.printf("[i] PC REMOTE: подключён (%08X)\n", (unsigned)sConnHandle);
       break;
     case ESP_SPP_DATA_IND_EVT:
       pcHandleBytes(param->data_ind.data, param->data_ind.len);

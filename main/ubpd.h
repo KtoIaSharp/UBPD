@@ -138,10 +138,13 @@ void handleManager(uint8_t ev);
 void handleBgSet(uint8_t ev);
 void handleWeb(uint8_t ev);
 void handlePcRemote(uint8_t ev);
+void handlePcPopup(uint8_t ev);
 // PC REMOTE: Bluetooth SPP-сервер + JSON (pcremote.cpp)
 void pcRemoteInit();
 void pcRemoteSend(const char *s);
 bool pcRemoteConnected();
+bool pcRemoteTakeIncoming(uint8_t *out);
+void pcRemoteDisconnect();
 // SD-карта (sdcard.cpp)
 void sdInit();
 bool sdMounted();
@@ -151,7 +154,9 @@ void sdListDir(const char *path);
 void playerInit();
 bool playerConnect(const uint8_t *bda);
 void playerPlay();
+void playerPause();
 void playerStop();
+uint8_t playerProgress();
 void playerDisconnect();
 bool playerLoadWav(const char *path);
 void playerUseTone();
