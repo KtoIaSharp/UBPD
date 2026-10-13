@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // ===========================================================================
 //  UBPD - Unknown Bluetooth Pocket Device  v0.1.0
@@ -28,8 +28,10 @@
 // config.h подключается первым - здесь эти типы уже видны.
 #include <esp_bt.h>
 #include <esp_gap_bt_api.h>
+// esp_bt_dev_set_device_name() живёт здесь: им задаём своё имя в классике (btclassic.cpp).
+#include <esp_bt_device.h>
 
-#define UBPD_VERSION "0.5.2"
+#define UBPD_VERSION "0.5.3"
 
 // ---------- OLED 128x64, 4-пиновый модуль (VCC GND SCL SDA) ----------
 #define OLED_SDA 21
@@ -117,7 +119,6 @@
 #define CONN_LINES 6
 #define CONN_LINE_LEN 27
 #define RADAR_PTS 16
-#define PC_MSG_LEN 64          // текст с ПК (PC REMOTE) на экран
 #define SERIAL_BAUD 115200
 
 // ---------- Classic Bluetooth (BR/EDR): вкладка CLASSIC BT ----------
@@ -190,7 +191,7 @@ enum Screen : uint8_t {
   SCR_MENU = 0, SCR_RADAR, SCR_SCANNERS, SCR_SCANNER, SCR_BLESCAN, SCR_DEVICE,
   SCR_REMOTE, SCR_WATCH, SCR_IDENTITY, SCR_BLEFUN, SCR_TIMED, SCR_TYPE,
   SCR_SLEEP, SCR_SETTINGS, SCR_MANAGER, SCR_BGSET, SCR_WEB, SCR_DIAG,
-  SCR_CLASSIC, SCR_CLASSICDEV, SCR_PCREMOTE, SCR_PCPOPUP
+  SCR_CLASSIC, SCR_CLASSICDEV, SCR_POPUP
 };
 
 enum BtnId : uint8_t { B_UP = 0, B_DOWN, B_OK, B_BACK, B_COUNT };
@@ -321,19 +322,17 @@ struct AppState {
   bool combPhase;           // true = сейчас сканируем BLE, false = классику
   uint32_t combSwitchAt;    // когда переключать режим
   uint8_t classicDevFrom;   // откуда открыли карточку классики
-  // --- v0.4.7: PC REMOTE (текст с ПК на экран) ---
-  char pcMsg[PC_MSG_LEN];   // последнее сообщение с ПК
-  uint32_t pcMsgUntil;      // до какого времени показывать
-  uint16_t pcCount;         // сколько сообщений принято
   // --- v0.5: REMOTE (плеер/пульт) ---
   uint8_t remoteMode;       // 0 - устройства, 1 - треки, 2 - AVRCP-пульт
   uint8_t remoteConnectMode; // 0 FULL (A2DP+AVRCP), 1 CTRL (только управление)
   uint8_t trackCursor;
   uint8_t trackTop;
-  // --- v0.5.1: всплывающее окно входящего Bluetooth-подключения ---
-  uint8_t pcChoice;         // выбранный пункт в попапе
-  uint8_t pcPeer[6];        // MAC входящего устройства
-  Screen pcBack;            // куда вернуться при отказе
+  uint8_t ctrlCursor;       // курсор в списке действий AVRCP-пульта
+  uint8_t ctrlTop;          // верхняя видимая строка пульта
+  // --- v0.5.1: окно входящего Bluetooth-подключения (любое ACL, не только SPP) ---
+  uint8_t popupChoice;      // выбранный пункт в окне
+  uint8_t popupPeer[6];     // MAC входящего устройства
+  Screen popupBack;         // куда вернуться при отказе
 };
 
 struct RssiSample {

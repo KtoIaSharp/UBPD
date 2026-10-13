@@ -14,7 +14,7 @@ void setup() {
   storageLoad();
   buzzerApplyIdle();
   BLEDevice::init("UBPD");
-  pcRemoteInit();  // Bluetooth SPP-сервер для управления с ПК (вкладка PC REMOTE)
+  classicInit();   // имя UBPD по классике + режим "виден и принимает подключения"
   splashScreen();
   toast(sdCardInfo(), 2500);
 

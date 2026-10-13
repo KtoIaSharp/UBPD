@@ -10,7 +10,6 @@ idf_component_register(
         "hardware.cpp"
         "radar.cpp"
         "scanner.cpp"
-        "pcremote.cpp"
         "sdcard.cpp"
         "player.cpp"
         "sleep.cpp"

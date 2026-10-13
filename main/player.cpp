@@ -49,6 +49,12 @@ static uint8_t sCurFrame[8];             // текущий кадр исходн
 static bool sCurValid = false;
 static double sFrac = 0.0;
 
+// --- диагностика звука (v0.5.3) ---
+// Каждый раз, когда буфер оказался пуст, кадр не отдан: слышно как заикание.
+// Счётчик копится за всё время работы - по нему видно, хватает ли буфера и
+// скорости SD (раньше это приходилось угадывать на слух).
+static volatile uint32_t sUnderruns = 0;
+
 // --- тон ---
 static float sPh = 0.0f;
 static const float sPhInc = 2.0f * 3.14159265f * 440.0f / 44100.0f;
@@ -151,6 +157,7 @@ static int32_t a2dDataCb(uint8_t *buf, int32_t len) {
     const double step = (double)sRate / 44100.0;
     for (int32_t f = 0; f < frames; f++) {
       if (!sCurValid && !ringPopFrame()) {   // старт/недобор - тишина
+        sUnderruns++;
         out[2 * f] = 0;
         out[2 * f + 1] = 0;
         continue;
@@ -161,7 +168,7 @@ static int32_t a2dDataCb(uint8_t *buf, int32_t len) {
       out[2 * f + 1] = r;
       sFrac += step;
       while (sFrac >= 1.0) {
-        if (!ringPopFrame()) break;           // буфер пуст - держим текущий кадр
+        if (!ringPopFrame()) { sUnderruns++; break; }  // буфер пуст - держим текущий кадр
         sFrac -= 1.0;
       }
     }
@@ -349,6 +356,12 @@ static uint8_t sTrackCur = 0;
 uint8_t playerTrackCount() { return sTrackCount; }
 const char *playerTrackName(uint8_t i) { return i < sTrackCount ? sTracks[i] : ""; }
 uint8_t playerCurrentTrack() { return sTrackCur; }
+uint32_t playerUnderruns() { return sUnderruns; }
+
+// Выбрать трек, ничего не играя: нужно, чтобы восстановить последний трек из NVS.
+void playerSetTrack(uint8_t idx) {
+  if (idx < sTrackCount) sTrackCur = idx;
+}
 
 // Диагностика формата WAV (для отладки "почему молчит/гудит").
 static void wavLogInfo(const char *path) {
@@ -450,3 +463,4 @@ void avrcNext()    { avrcPt(ESP_AVRC_PT_CMD_FORWARD); }
 void avrcPrev()    { avrcPt(ESP_AVRC_PT_CMD_BACKWARD); }
 void avrcVolUp()   { avrcPt(ESP_AVRC_PT_CMD_VOL_UP); }
 void avrcVolDown() { avrcPt(ESP_AVRC_PT_CMD_VOL_DOWN); }
+void avrcMute()    { avrcPt(ESP_AVRC_PT_CMD_MUTE); }

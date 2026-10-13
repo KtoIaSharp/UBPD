@@ -1,4 +1,4 @@
-﻿// Function declarations shared between UBPD modules.
+// Function declarations shared between UBPD modules.
 // The Arduino builder used to generate these with ctags; main/ is now built
 // by IDF as several .cpp files, so the declarations are explicit here.
 // Add a line here when a new function is called from another module.
@@ -9,6 +9,8 @@
 void setup();
 void loop();
 void classicLabel(const ClassicDevice *d, char *out, size_t maxChars);
+void classicInit();
+bool classicTakeIncoming(uint8_t *out);
 void classicScanStart();
 void classicScanStop();
 void classicTick();
@@ -85,6 +87,8 @@ void sleepStop();
 void sleepTick();
 void storageSaveFavorites();
 void storageSaveSettings();
+void storageSaveRemoteTrack(uint8_t idx);
+uint8_t storageLoadRemoteTrack();
 void storageLoad();
 void storageReset();
 int favCount();
@@ -137,14 +141,7 @@ void handleClassicDev(uint8_t ev);
 void handleManager(uint8_t ev);
 void handleBgSet(uint8_t ev);
 void handleWeb(uint8_t ev);
-void handlePcRemote(uint8_t ev);
-void handlePcPopup(uint8_t ev);
-// PC REMOTE: Bluetooth SPP-сервер + JSON (pcremote.cpp)
-void pcRemoteInit();
-void pcRemoteSend(const char *s);
-bool pcRemoteConnected();
-bool pcRemoteTakeIncoming(uint8_t *out);
-void pcRemoteDisconnect();
+void handlePopup(uint8_t ev);
 // SD-карта (sdcard.cpp)
 void sdInit();
 bool sdMounted();
@@ -169,12 +166,15 @@ void playerNextTrack();
 uint8_t playerTrackCount();
 const char *playerTrackName(uint8_t i);
 uint8_t playerCurrentTrack();
+uint32_t playerUnderruns();     // сколько раз буфер пустел (диагностика звука)
+void playerSetTrack(uint8_t idx); // выбрать трек без воспроизведения (NVS-память)
 void avrcInit();
 void avrcPlayPause();
 void avrcNext();
 void avrcPrev();
 void avrcVolUp();
 void avrcVolDown();
+void avrcMute();
 void handleRemote(uint8_t ev);
 void drawCurrentScreen();
 void webInit();

@@ -19,6 +19,41 @@
 // само решило быть видимым.
 
 static bool classicCbReady = false;
+static void classicGapCb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
+
+// ---------- Входящие подключения ----------
+// Устройство остаётся classic-connectable/discoverable (имя UBPD видно в поиске
+// телефонов). SPP-сервера больше нет (PC REMOTE удалён), поэтому любое входящее
+// подключение ловим на уровне линка - ACL: кто-то открыл сессию с нами, значит
+// надо спросить, что с ним делать (окно FULL/CTRL/ОТКАЗ в ui.cpp).
+//
+// ВАЖНО: ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT приходит и на НАШИ исходящие
+// подключения (REMOTE подключается к наушникам). Разбирается это в ui.cpp:
+// пока открыт экран REMOTE или само окно, событие забирается и гасится молча.
+static volatile bool sIncoming = false;
+static uint8_t sIncomingPeer[6] = {0};
+
+// Разово: колбэк + своё имя в эфире + режим "виден и принимает подключения".
+// Раньше это делал pcremote.cpp вместе с SPP; теперь живёт здесь.
+void classicInit() {
+  if (classicCbReady) return;
+  if (esp_bt_gap_register_callback(classicGapCb) != ESP_OK) {
+    setError("bt_gap cb failed");
+    return;
+  }
+  classicCbReady = true;
+  esp_bt_dev_set_device_name("UBPD");
+  esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+  Serial.println("[i] CLASSIC: имя UBPD, режим connectable+discoverable");
+}
+
+// Забрать входящее подключение (одноразово). false - ничего не было.
+bool classicTakeIncoming(uint8_t *out) {
+  if (!sIncoming) return false;
+  sIncoming = false;
+  if (out) memcpy(out, sIncomingPeer, 6);
+  return true;
+}
 
 // Адреса, ответившие на текущий поиск, и очередь запросов имени.
 #define CLASSIC_INQ_ADDRS 8
@@ -291,6 +326,19 @@ static void classicGapCb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *par
         if (classicWant && !classicNamePhase) classicNamesPrepare();
       }
       break;
+    // Кто-то подключился к нам по классике (или мы к нему - см. пояснение выше).
+    case ESP_BT_GAP_ACL_CONN_CMPL_STAT_EVT:
+      if (param->acl_conn_cmpl_stat.stat == ESP_BT_STATUS_SUCCESS) {
+        memcpy(sIncomingPeer, param->acl_conn_cmpl_stat.bda, 6);
+        sIncoming = true;
+        Serial.printf("[i] CLASSIC: ACL подключение %02X:%02X:%02X:%02X:%02X:%02X\n",
+                      sIncomingPeer[0], sIncomingPeer[1], sIncomingPeer[2],
+                      sIncomingPeer[3], sIncomingPeer[4], sIncomingPeer[5]);
+      }
+      break;
+    case ESP_BT_GAP_ACL_DISCONN_CMPL_STAT_EVT:
+      Serial.printf("[i] CLASSIC: ACL отключение h=%u\n", (unsigned)param->acl_disconn_cmpl_stat.handle);
+      break;
     default:
       break;
   }
@@ -306,13 +354,8 @@ void classicScanStart() {
   if (millis() - classicLastStart < CLASSIC_RESTART_MS) return;
   classicLastStart = millis();
 
-  if (!classicCbReady) {
-    if (esp_bt_gap_register_callback(classicGapCb) != ESP_OK) {
-      setError("bt_gap cb failed");
-      return;
-    }
-    classicCbReady = true;
-  }
+  classicInit();   // колбэк, имя и режим видимости - один раз на старте
+  if (!classicCbReady) return;
   esp_err_t e = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, CLASSIC_INQ_UNITS, 0);
   if (e == ESP_OK) {
     classicScanning = true;

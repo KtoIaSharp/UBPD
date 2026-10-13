@@ -138,6 +138,18 @@ void storageSaveSettings() {
   nvsSetU8("sort", app.sortMode);
 }
 
+// Последний выбранный трек плеера (v0.5.3): после перезагрузки REMOTE
+// открывается на нём же, а не с начала списка.
+void storageSaveRemoteTrack(uint8_t idx) {
+  storageEnsure();
+  nvsSetU8("trk", idx);
+}
+
+uint8_t storageLoadRemoteTrack() {
+  storageEnsure();
+  return nvsGetU8("trk", 0);
+}
+
 // Сброс настроек: чистим только своё пространство имён (как Preferences.clear()).
 void storageReset() {
   storageEnsure();
