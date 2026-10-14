@@ -20,6 +20,7 @@ int16_t classicOrderIndexOf(const uint8_t *addr);
 int16_t classicLookupByAddr(const uint8_t *addr);
 void toggleFavoriteClassic(int16_t clsIdx);
 void buzzerInit();
+void buzzerBootPulse(uint16_t ms);
 void buzzerApplyIdle();
 void buzzerPlay(uint8_t count);
 void buzzerSilence();

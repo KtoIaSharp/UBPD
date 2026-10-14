@@ -8,6 +8,7 @@ void setup() {
 
   hardwareInit();
   buzzerInit();
+  buzzerBootPulse(BOOT_VIBRO_MS);   // вибро при включении (3 с) - не ждёт остальной загрузки
   displayInit();
   sdInit();
   uiInit();

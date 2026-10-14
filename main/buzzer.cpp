@@ -25,6 +25,10 @@
 static uint8_t beepsLeft = 0;
 static bool beepActive = false;
 static uint32_t beepAt = 0;
+// Приветственный импульс при включении (BOOT_VIBRO_MS): мотор включается сразу,
+// а гасится в buzzerTick - загрузка из-за него не ждёт.
+static bool bootActive = false;
+static uint32_t bootUntil = 0;
 static bool ledcReady = false;
 
 static void ledcEnsure() {
@@ -81,7 +85,28 @@ void buzzerInit() {
 // Держим мотор в покое - после загрузки настроек и при их смене.
 void buzzerApplyIdle() {
 #if BUZZER_ENABLED
+  if (bootActive) return;   // не гасим приветственный импульс на первых секундах
   hapticOff();
+#endif
+}
+
+// Вибро при включении: длинный одиночный импульс (по умолчанию 3 с).
+// Работает по схеме и силе из config.h, потому что app.* прочитается из NVS
+// только позже, а вибро нужно ровно в момент подачи питания.
+void buzzerBootPulse(uint16_t ms) {
+#if BUZZER_ENABLED
+  bootUntil = millis() + ms;
+  bootActive = true;
+  beepsLeft = 0;
+  beepActive = false;
+  ledcEnsure();
+  uint32_t d = (BUZZER_ACTIVE == 0) ? H_DUTY_WEAK : H_DUTY_STRONG;
+  hapticSetDuty(BUZZER_INVERT ? 0 : d);
+  Serial.printf("[i] ВИБРО: приветствие %u мс (%s, %s)\n", (unsigned)ms,
+                (BUZZER_ACTIVE == 0) ? "слабо" : "сильно",
+                BUZZER_INVERT ? "инверсия" : "норма");
+#else
+  (void)ms;
 #endif
 }
 
@@ -101,6 +126,7 @@ void buzzerSilence() {
   hapticOff();
   beepsLeft = 0;
   beepActive = false;
+  bootActive = false;
 #endif
 }
 
@@ -122,6 +148,17 @@ void buzzerTest() {
 void buzzerTick() {
 #if BUZZER_ENABLED
   uint32_t now = millis();
+
+  // Приветственный импульс: держим мотор, пока не выйдет время (проверяется
+  // раньше всего остального - он не зависит от настройки ВИБРО в NVS).
+  if (bootActive) {
+    if ((int32_t)(now - bootUntil) < 0) return;
+    hapticOff();
+    bootActive = false;
+    beepAt = now;   // обычная очередь импульсов может продолжаться
+    Serial.println("[i] ВИБРО: приветствие закончено");
+    return;
+  }
 
   if (!app.buzzerOn && !beepActive) {
     if (beepsLeft) { beepsLeft = 0; hapticOff(); }
